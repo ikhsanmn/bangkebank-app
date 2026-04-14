@@ -1,0 +1,47 @@
+{
+  "name": "bangkebank-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "db:generate": "drizzle-kit generate",
+    "db:start": "bash scripts/db/run-db-command.sh start",
+    "db:stop": "bash scripts/db/run-db-command.sh stop",
+    "db:migrate": "bash scripts/db/run-db-command.sh migrate",
+    "db:studio": "bash scripts/db/run-db-command.sh studio"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "^1.6.0",
+    "better-auth": "^1.6.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.1",
+    "drizzle-orm": "^0.44.5",
+    "lucide-react": "^0.474.0",
+    "next": "14.2.26",
+    "pg": "^8.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "autoprefixer": "^10.4.20",
+    "dotenv": "^16.4.7",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.26",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2"
+  }
+}

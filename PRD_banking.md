@@ -1,0 +1,219 @@
+# PRD — Project Requirements Document
+
+## 1. Overview
+Aplikasi ini adalah platform financial SaaS berbasis web bernama **Horizon** yang membantu pengguna menghubungkan beberapa rekening bank, melihat saldo gabungan, meninjau histori transaksi, dan melakukan transfer dana antar akun melalui integrasi pihak ketiga.
+
+Masalah utama yang diselesaikan adalah fragmentasi data finansial. Tanpa aplikasi ini, pengguna perlu membuka beberapa portal bank untuk melihat saldo, mengecek transaksi terbaru, dan mengelola perpindahan dana. Horizon menyatukan aktivitas tersebut ke dalam satu dashboard yang lebih ringkas dan mudah dipantau.
+
+Tujuan utama aplikasi adalah menyediakan pengalaman digital banking modern untuk **pengguna individual** dengan fokus pada:
+- agregasi multi-bank,
+- visibilitas transaksi yang lebih cepat,
+- transfer dana antar akun berbasis ACH,
+- dan pengalaman onboarding yang aman melalui autentikasi serta koneksi bank.
+
+## 2. Requirements
+Berikut adalah persyaratan tingkat tinggi yang terobservasi dari implementasi sistem:
+- **Aksesibilitas:** Aplikasi harus berjalan di Web Browser dan responsif untuk desktop maupun mobile.
+- **Pengguna:** Sistem berorientasi pada pengguna individual, bukan admin multi-role atau backoffice.
+- **Autentikasi:** Pengguna harus dapat Sign Up, Sign In, dan Sign Out menggunakan session berbasis server.
+- **KYC Dasar:** Saat pendaftaran, pengguna wajib mengisi identitas pribadi seperti nama, alamat, kota, state, postal code, tanggal lahir, dan SSN.
+- **Konektivitas Bank:** Setelah registrasi, pengguna harus dapat menghubungkan rekening bank melalui Plaid Link.
+- **Mata Uang & Lokasi:** Produk saat ini dirancang untuk konteks **US banking**, menggunakan format **USD** dan kode negara **US**.
+- **Transfer Dana:** Pengguna harus dapat mentransfer dana dari rekening sumber miliknya ke rekening tujuan yang dikenali lewat shareable account ID.
+- **Observabilitas Riwayat:** Sistem harus menampilkan histori transaksi bank dan histori transfer internal pada halaman yang sama agar pengguna mendapat gambaran keuangan yang utuh.
+
+## 3. Core Features
+Fitur-fitur utama yang terbukti ada pada versi saat ini adalah:
+
+1. **Authentication & Onboarding**
+   - Sign Up dan Sign In berbasis email/password.
+   - Session disimpan pada cookie server-side.
+   - Setelah Sign Up, pengguna diarahkan untuk langsung menghubungkan rekening bank.
+
+2. **Bank Account Linking**
+   - Integrasi Plaid Link untuk menghubungkan rekening bank eksternal.
+   - Sistem menukar `public_token` menjadi `access_token`.
+   - Sistem membuat funding source di Dwolla agar rekening dapat dipakai untuk transfer.
+
+3. **Home Dashboard**
+   - Sapaan personal untuk pengguna yang sedang login.
+   - Ringkasan jumlah rekening bank yang terhubung.
+   - Total current balance dari seluruh rekening.
+   - Daftar recent transactions.
+   - Analisis kategori transaksi teratas.
+
+4. **My Banks**
+   - Menampilkan seluruh rekening bank yang telah terhubung.
+   - Setiap kartu rekening menampilkan nama akun, saldo, dan mask number.
+   - Pengguna dapat menyalin shareable ID akun untuk kebutuhan transfer.
+
+5. **Transaction History**
+   - Melihat detail rekening tertentu.
+   - Menampilkan daftar transaksi hasil sinkronisasi Plaid.
+   - Menggabungkan transaksi transfer internal yang tercatat di Appwrite.
+   - Pagination untuk memudahkan penelusuran histori.
+
+6. **Funds Transfer**
+   - Memilih rekening sumber.
+   - Mengisi email penerima.
+   - Mengisi shareable ID penerima.
+   - Mengisi nominal transfer dan catatan transfer.
+   - Sistem membuat transfer melalui Dwolla dan menyimpan log transaksi internal.
+
+## 4. User Flow
+Alur penggunaan utama pengguna dalam aplikasi ini adalah:
+
+1. **Registrasi**
+   - Pengguna membuka halaman Sign Up.
+   - Pengguna mengisi identitas pribadi, email, dan password.
+   - Sistem membuat akun autentikasi di Appwrite dan customer di Dwolla.
+
+2. **Koneksi Rekening**
+   - Setelah registrasi berhasil, pengguna menekan tombol Connect Bank.
+   - Plaid Link dibuka untuk memilih dan menghubungkan rekening bank.
+   - Sistem menyimpan metadata rekening dan funding source yang dibutuhkan untuk transfer.
+
+3. **Monitoring Dashboard**
+   - Pengguna masuk ke halaman Home.
+   - Sistem menampilkan total saldo seluruh rekening, daftar transaksi terbaru, dan kategori pengeluaran/aktivitas teratas.
+
+4. **Meninjau Rekening**
+   - Pengguna membuka halaman My Banks.
+   - Pengguna melihat seluruh kartu rekening yang sudah terhubung.
+   - Pengguna dapat menyalin shareable ID bila ingin menerima transfer.
+
+5. **Meninjau Histori Transaksi**
+   - Pengguna membuka halaman Transaction History.
+   - Pengguna memilih rekening tertentu.
+   - Sistem menampilkan histori transaksi rekening tersebut lengkap dengan status, channel, kategori, dan tanggal.
+
+6. **Melakukan Transfer Dana**
+   - Pengguna membuka halaman Transfer Funds.
+   - Pengguna memilih rekening sumber, memasukkan email penerima, shareable ID penerima, nominal, dan catatan.
+   - Sistem membuat transfer melalui Dwolla lalu mencatat transaksi di Appwrite.
+   - Setelah berhasil, pengguna diarahkan kembali ke dashboard.
+
+## 5. Architecture
+Berikut adalah gambaran arsitektur sistem berdasarkan implementasi saat ini:
+
+```mermaid
+sequenceDiagram
+    participant User as User (Browser)
+    participant UI as Frontend (Next.js App Router)
+    participant Server as Server Actions
+    participant Appwrite as Appwrite
+    participant Plaid as Plaid API
+    participant Dwolla as Dwolla API
+
+    Note over User,Dwolla: Proses Koneksi Rekening Bank
+
+    User->>UI: Klik "Connect Bank"
+    UI->>Server: Request link token
+    Server->>Plaid: Create Link Token
+    Plaid-->>Server: link_token
+    Server-->>UI: link_token
+    User->>Plaid: Selesaikan Plaid Link
+    Plaid-->>UI: public_token
+    UI->>Server: Exchange public_token
+    Server->>Plaid: Tukar public_token menjadi access_token
+    Plaid-->>Server: access_token + item_id + account data
+    Server->>Plaid: Buat processor token Dwolla
+    Plaid-->>Server: processor_token
+    Server->>Dwolla: Buat funding source
+    Dwolla-->>Server: funding_source_url
+    Server->>Appwrite: Simpan dokumen bank account
+    Appwrite-->>Server: Konfirmasi sukses
+    Server-->>UI: Status koneksi selesai
+    UI-->>User: Dashboard terbarui
+```
+
+## 6. Database Schema
+Struktur data utama yang dapat diinferensikan dari implementasi Appwrite adalah sebagai berikut:
+
+```mermaid
+erDiagram
+    users {
+        string id PK
+        string userId
+        string email
+        string firstName
+        string lastName
+        string address1
+        string city
+        string state
+        string postalCode
+        string dateOfBirth
+        string ssn
+        string dwollaCustomerId
+        string dwollaCustomerUrl
+    }
+
+    banks {
+        string id PK
+        string userId FK
+        string bankId
+        string accountId
+        string accessToken
+        string fundingSourceUrl
+        string shareableId
+    }
+
+    transactions {
+        string id PK
+        string senderId FK
+        string senderBankId FK
+        string receiverId FK
+        string receiverBankId FK
+        string name
+        string email
+        string amount
+        string channel
+        string category
+        datetime createdAt
+    }
+
+    users ||--o{ banks : "owns"
+    users ||--o{ transactions : "sends/receives"
+    banks ||--o{ transactions : "used in transfer"
+```
+
+| Tabel / Collection | Deskripsi |
+|-------|-----------|
+| **users** | Menyimpan profil pengguna, data identitas, dan informasi customer Dwolla |
+| **banks** | Menyimpan metadata rekening yang terhubung, access token Plaid, funding source Dwolla, dan shareable ID |
+| **transactions** | Menyimpan log transfer internal antar rekening yang dilakukan melalui aplikasi |
+
+## 7. Design & Technical Constraints
+Bagian ini merangkum batasan desain dan teknis yang terlihat dari codebase saat ini:
+
+1. **High-Level Technology**
+   Sistem dibangun dengan **Next.js 14 App Router**, **TypeScript**, dan **Tailwind CSS**. Interaksi server-side banyak menggunakan **Server Actions**, sementara penyimpanan data pengguna dan transaksi dilakukan di **Appwrite**.
+
+2. **External Integrations**
+   - **Plaid** digunakan untuk link bank account, account retrieval, institution lookup, dan transaction sync.
+   - **Dwolla** digunakan untuk customer creation, funding source creation, dan transfer ACH.
+   - Integrasi saat ini terlihat diarahkan ke **sandbox/testing setup**.
+
+3. **Authentication & Session**
+   Autentikasi mengandalkan Appwrite dengan cookie `appwrite-session` untuk menjaga sesi login. Halaman di area utama aplikasi mewajibkan pengguna sudah terautentikasi.
+
+4. **Financial Context**
+   Produk saat ini terikat pada:
+   - format nominal **USD**,
+   - locale tampilan **en-US**,
+   - kode negara **US** saat pembuatan Plaid Link,
+   - serta kebutuhan data identitas khas onboarding finansial di Amerika Serikat.
+
+5. **UI / Design Direction**
+   Antarmuka menggunakan layout dashboard modern dengan:
+   - navigasi sidebar,
+   - kartu rekening,
+   - tabel transaksi,
+   - dan visualisasi chart untuk distribusi saldo.
+   Font yang digunakan pada implementasi saat ini adalah **Inter** dan **IBM Plex Serif**.
+
+6. **Known Product Constraints**
+   - Transfer tujuan tidak menggunakan pencarian penerima, melainkan **shareable ID** yang dimasukkan manual.
+   - Riwayat transaksi merupakan gabungan dari data Plaid dan log transfer internal Appwrite.
+   - Sistem belum menunjukkan adanya role management, approval workflow, notifikasi real-time, atau admin panel.
+   - Reliabilitas fitur sangat bergantung pada ketersediaan layanan pihak ketiga: Appwrite, Plaid, dan Dwolla.
