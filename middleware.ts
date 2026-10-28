@@ -11,8 +11,11 @@ export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (pathname.startsWith("/api/")) {
-    // better-auth runs its own origin check on /api/auth.
-    if (STATE_CHANGING.has(request.method) && !pathname.startsWith("/api/auth/")) {
+    // better-auth runs its own origin check on /api/auth. The partner API
+    // (/api/v1) authenticates with bearer API keys, never cookies, so a
+    // cross-site page can't ride on a victim's credentials there.
+    const exempt = pathname.startsWith("/api/auth/") || pathname.startsWith("/api/v1/");
+    if (STATE_CHANGING.has(request.method) && !exempt) {
       const origin = request.headers.get("origin");
       if (!origin || origin !== request.nextUrl.origin) {
         return NextResponse.json({ error: "Cross-origin request rejected." }, { status: 403 });

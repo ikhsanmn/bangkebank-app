@@ -5,10 +5,9 @@ import { APIError } from "better-auth/api";
 import { authDb } from "@/lib/db";
 import { accounts, DEMO_TENANT_ID, sessions, users, verifications } from "@/lib/db/schema";
 import { env } from "@/lib/env";
-import { isPostalCode, isProvince, validateDateOfBirth, validateNik } from "@/lib/kyc";
 import { auditContextFrom, recordAudit } from "@/lib/server/audit";
 import { seedUserWorkspace } from "@/lib/server/banking";
-import { encryptPii, hashNik } from "@/lib/server/pii";
+import { protectIdentity } from "@/lib/server/identity";
 
 const ONE_HOUR_SECONDS = 60 * 60;
 
@@ -23,39 +22,13 @@ const KYC_FIELDS = [
   "tenantId"
 ];
 
-function badRequest(message: string): never {
-  throw new APIError("BAD_REQUEST", { message });
-}
-
-function text(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-// Validates the Indonesian identity fields and swaps the sensitive ones for
-// ciphertext before the row is written. Plaintext NIK never reaches the database.
+// Identity checks and encryption live in lib/server/identity.ts.
 function prepareIdentity<T extends Record<string, unknown>>(user: T) {
-  const nik = text(user.nik);
-  const dateOfBirth = text(user.dateOfBirth);
-  const address = text(user.address1);
-
-  const error =
-    validateDateOfBirth(dateOfBirth) ??
-    validateNik(nik, dateOfBirth) ??
-    (isProvince(text(user.province)) ? null : "Choose a province from the list.") ??
-    (isPostalCode(text(user.postalCode)) ? null : "Postal code must be 5 digits.") ??
-    (address.length >= 5 ? null : "Enter your street address.");
-  if (error) {
-    badRequest(error);
+  const result = protectIdentity(user);
+  if (!result.ok) {
+    throw new APIError("BAD_REQUEST", { message: result.error });
   }
-
-  return {
-    ...user,
-    nik: encryptPii(nik),
-    nikLast4: nik.slice(-4),
-    nikHash: hashNik(nik),
-    dateOfBirth: encryptPii(dateOfBirth),
-    address1: encryptPii(address)
-  };
+  return result.data;
 }
 
 function auditContext(

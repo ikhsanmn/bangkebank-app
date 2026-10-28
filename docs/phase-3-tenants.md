@@ -1,6 +1,6 @@
 # Phase 3 plan: tenants and API keys for fintech clients
 
-Status: **in progress**. Tasks 1–5 done (see [Progress](#progress)). Branch:
+Status: **in progress**. Tasks 1–6 done (see [Progress](#progress)). Branch:
 `phase-3-tenants` (from `phase-2-ledger`).
 
 Phase 2 gave every rupiah a ledger, an audit trail and DB-enforced invariants.
@@ -343,3 +343,72 @@ failed transfer each. Then, acting from tenant A against tenant B:
   case, cross-tenant revoke/roll/list refused, roll with grace and cut-over,
   scope and name validation, and the audit trail.
 - **Verified:** 75/75 tests, lint, typecheck, `next build`, drift check.
+
+### Task 6: partner API v1 (done)
+
+**Endpoints** (all `Authorization: Bearer bk_test_…`):
+
+| Method | Path | Scope | Notes |
+|---|---|---|---|
+| POST | `/api/v1/customers` | `customers:write` | Full NIK KYC (same rules and encryption as web sign-up); 409 `customer_exists` on a duplicate email or NIK within the tenant |
+| GET | `/api/v1/customers/:customerId` | `customers:read` | Never returns NIK, date of birth or address; `nikLast4` only |
+| POST | `/api/v1/customers/:customerId/accounts` | `accounts:write` | `Savings` or `Current`; opens at zero |
+| GET | `/api/v1/accounts/:accountId` | `accounts:read` | |
+| GET | `/api/v1/accounts/:accountId/statement` | `accounts:read` | `?limit=1..100&cursor=`; newest first |
+| POST | `/api/v1/accounts/:accountId/sandbox-deposits` | `accounts:write` | Sandbox-only play money from `SANDBOX_FUNDING` (added during build: partners otherwise had no way to fund customers) |
+| POST | `/api/v1/transfers` | `transfers:write` | `Idempotency-Key` required; 201 settled, 200 replay, 422 `insufficient_funds` (body includes the failed transfer), 422 `idempotency_key_reused` if the key comes back with a different payload |
+| GET | `/api/v1/transfers/:transferId` | `transfers:read` | |
+| GET | `/api/v1/ledger/entries` | `ledger:read` | Entries with their postings; same pagination |
+
+**How it's built:**
+- `lib/server/partner-api.ts` `partnerRoute()` wraps every route. It verifies
+  the key (401 with `WWW-Authenticate: Bearer`), then applies the rate limit
+  (429 with `Retry-After`), then checks the scope (403), then checks the
+  idempotency header. It maps errors to
+  `{ error: { code, message, requestId } }`, sets `X-Request-Id`, and logs
+  every authenticated call to `apiRequest` under the route *template*.
+- `apiRequest` (`drizzle/0007`) is tenant-scoped under RLS and append-only (the
+  same trigger as the audit log).
+- `lib/server/partner.ts` holds the service functions and the response views.
+  Transfers reuse `createTransferForUser`, so locking, the ledger, failed
+  attempts and idempotency behave exactly as in the web app.
+- The KYC check moved from `lib/auth.ts` to `lib/server/identity.ts`, shared by
+  web sign-up and the API.
+- `middleware.ts` exempts `/api/v1/` from the same-origin POST gate: it
+  authenticates with bearer keys only, never cookies, so cross-site request
+  forgery doesn't apply there. The cookie API is still gated.
+
+**Tests:** `tests/partner-api.test.ts` (14) calls the route handlers with real
+`Request` objects:
+- 401 is not logged; 403 is logged with the route template;
+- a suspended tenant's key stops working;
+- the per-key rate limit applies, and another key is unaffected;
+- the middleware exemption covers `/api/v1` but not the cookie API;
+- customer KYC: no identity data in responses, duplicates refused, invalid NIK
+  and malformed JSON rejected;
+- account opening and funding; statement pagination, including bad cursor and
+  limit;
+- transfer settle, replay, reused key, missing key, insufficient funds;
+- the ledger with balanced postings;
+- a second tenant gets 404 on every customer, account, statement, transfer,
+  account-opening, deposit and transfer path against the first tenant, which
+  keeps its money.
+
+**Verified:**
+- 89/89 tests, lint, typecheck, `next build`, drift check;
+- an HTTP smoke test against the production server (12/12): no-key POST gets
+  401 rather than the CSRF 403, the full customer → account → deposit →
+  transfer → replay flow works, statement and ledger read correctly, every call
+  is logged under its template, and the cookie API still returns 403;
+- the Phase 2 end-to-end script still passes (32/32), so web sign-up is
+  unaffected by the KYC move. Clean server log.
+
+**Known limits:**
+- The rate limit is a fixed one-minute window counted from the log, so a burst
+  of concurrent calls can overshoot it slightly.
+- Sandbox deposits are not idempotent.
+- Transfer idempotency is scoped to (tenant, sending customer, key), not to the
+  API key.
+- There is no list-customers endpoint yet.
+- Unauthenticated calls aren't logged (they have no tenant); they show only in
+  server logs.

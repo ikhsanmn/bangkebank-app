@@ -249,6 +249,66 @@ export async function createBankForUser(
   });
 }
 
+// Sandbox-only: credits an account from SANDBOX_FUNDING so partner tenants can
+// fund the customers they create. Returns the statement line.
+export async function depositSandboxFunds(
+  tenantId: string,
+  bankAccountId: string,
+  amount: number,
+  context: AuditContext
+) {
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    throw new TransferError("Amount must be a positive whole number of rupiah.", 422);
+  }
+  return withTenant(tenantId, async (tx) => {
+    const [account] = await lockAccounts(tx, [bankAccountId], "update");
+    if (!account) {
+      throw new TransferError("Account not found.", 404);
+    }
+    const occurredAt = new Date();
+    const entryId = await postEntry(tx, {
+      tenantId,
+      kind: "sandbox_funding",
+      description: "Sandbox deposit",
+      occurredAt,
+      postings: [
+        { bankAccountId, amount },
+        { systemAccount: "SANDBOX_FUNDING", amount: -amount }
+      ]
+    });
+    const [line] = await tx
+      .insert(bankTransactions)
+      .values({
+        id: crypto.randomUUID(),
+        tenantId,
+        userId: account.userId,
+        bankAccountId,
+        entryId,
+        name: "Sandbox deposit",
+        amount,
+        direction: "credit",
+        status: "Completed",
+        channel: "Book transfer",
+        category: "Deposit",
+        source: "Partner API",
+        occurredAt
+      })
+      .returning();
+    await recordAudit(
+      { ...context, tenantId },
+      {
+        action: "sandbox.deposited",
+        outcome: "success",
+        entityType: "bankAccount",
+        entityId: bankAccountId,
+        metadata: { amount, entryId }
+      },
+      tx
+    );
+    return line;
+  });
+}
+
 const MAX_PAGE_SIZE = 100;
 
 export async function listTimelineForUser(

@@ -44,6 +44,7 @@ describe("row-level security", () => {
     const scoped = result.rows.filter((row) => !unscoped.includes(row.table));
     expect(result.rows.filter((row) => unscoped.includes(row.table)).map((row) => row.table)).toEqual(unscoped);
     expect(scoped.map((row) => row.table)).toEqual([
+      "apiRequest",
       "auditEvent",
       "bankAccount",
       "bankTransaction",

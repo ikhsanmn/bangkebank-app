@@ -5,6 +5,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -463,6 +464,32 @@ export const auditEvents = pgTable(
   })
 );
 
+// One row per authenticated partner API call: the usage log and the source of
+// per-key rate limiting. Tenant-scoped under RLS and append-only (drizzle/0007).
+export const apiRequests = pgTable(
+  "apiRequest",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenantId")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict" }),
+    apiKeyId: text("apiKeyId")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "restrict" }),
+    method: text("method").notNull(),
+    // The route template (/api/v1/accounts/:accountId), never the raw path.
+    route: text("route").notNull(),
+    status: integer("status").notNull(),
+    durationMs: integer("durationMs").notNull(),
+    idempotencyKey: text("idempotencyKey"),
+    occurredAt: timestamp("occurredAt", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    keyIdx: index("api_request_key_idx").on(table.apiKeyId, table.occurredAt),
+    tenantIdx: index("api_request_tenant_idx").on(table.tenantId, table.occurredAt)
+  })
+);
+
 export const schema = {
   tenants,
   tenantMembers,
@@ -476,5 +503,6 @@ export const schema = {
   transfers,
   ledgerEntries,
   ledgerPostings,
-  auditEvents
+  auditEvents,
+  apiRequests
 };
