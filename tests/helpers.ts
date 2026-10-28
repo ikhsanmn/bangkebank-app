@@ -12,9 +12,12 @@ export { adminDb };
 // A user with the standard seeded workspace, created directly in the database
 // as the app role (sign-up itself goes through better-auth). Assertions read
 // through adminDb, which sees every tenant.
-export async function createSeededUser(label = "user", tenantId = DEMO_TENANT_ID) {
+export async function createSeededUser(
+  label = "user",
+  tenantId = DEMO_TENANT_ID,
+  email = `${label}-${crypto.randomUUID().slice(0, 8)}@example.test`
+) {
   const id = crypto.randomUUID();
-  const email = `${label}-${id.slice(0, 8)}@example.test`;
   await withTenant(tenantId, (tx) =>
     tx.insert(users).values({ id, tenantId, name: `${label} test`, email })
   );

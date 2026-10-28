@@ -1,6 +1,6 @@
 # Phase 3 plan: tenants and API keys for fintech clients
 
-Status: **in progress**. Tasks 1–3 done (see [Progress](#progress)). Branch:
+Status: **in progress**. Tasks 1–4 done (see [Progress](#progress)). Branch:
 `phase-3-tenants` (from `phase-2-ledger`).
 
 Phase 2 gave every rupiah a ledger, an audit trail and DB-enforced invariants.
@@ -284,3 +284,33 @@ the service layer.
   check and the 40-way deadlock test, all work under RLS), lint, typecheck,
   `next build`, the drift check, and the Phase 2 end-to-end script against the
   production build (32/32, clean server log).
+
+### Task 4: isolation tests (done)
+
+`tests/isolation.test.ts` (20 tests) builds two tenants with identical data:
+the same customer emails, the same seeded accounts, and one settled and one
+failed transfer each. Then, acting from tenant A against tenant B:
+
+- **Service layer:**
+  - every read function (`listBanksForUser`, `getBankForUser`,
+    `listTimelineForUser` including the `bankAccountId` filter,
+    `listTransfersForUser`, `getUserProfile`, `getDashboardData`) finds nothing;
+  - each tenant still gets exactly its own data, and its ledger reconciles;
+  - a transfer can neither pay into B's account (same email, real shareable id)
+    nor spend from it: both are 404, and B's balance is untouched;
+  - creating an account or seeding a workspace for B's user fails without a
+    trace in B;
+  - A's audit events are invisible from B.
+- **Raw SQL as the app role, for all 7 tenant-scoped tables:**
+  - reads see exactly A's rows (none foreign; count matches the observer's
+    count for A);
+  - `UPDATE` and `DELETE` aimed at B's rows touch 0 rows. On the append-only
+    tables, RLS filters the rows out before the immutability trigger could
+    fire;
+  - inserting a row into B, or moving one of A's rows into B, is refused;
+  - clearing the setting mid-transaction hides everything (the policy reads the
+    live value).
+- **Mutation check:** with RLS removed from `bankAccount` in the migration, 11 of
+  the 27 RLS and isolation tests fail, exactly the ones that touch that table.
+  Restored afterwards.
+- **Verified:** 66/66 tests, lint, typecheck.
