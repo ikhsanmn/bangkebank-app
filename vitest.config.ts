@@ -24,7 +24,8 @@ export default defineConfig({
       DATABASE_SSL: "false",
       BETTER_AUTH_SECRET: "test-only-secret-0123456789abcdefghijklmnop",
       BETTER_AUTH_URL: "http://localhost:3000",
-      PII_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64")
+      PII_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+      API_KEY_PEPPER: Buffer.alloc(32, 3).toString("base64")
     }
   }
 });

@@ -29,6 +29,7 @@ jobs:
       BETTER_AUTH_SECRET: ci-only-secret-0123456789abcdefghijklmnop
       BETTER_AUTH_URL: http://localhost:3000
       PII_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      API_KEY_PEPPER: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

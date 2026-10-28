@@ -102,6 +102,49 @@ export const tenantMembers = pgTable(
   })
 );
 
+export const API_SCOPES = [
+  "customers:read",
+  "customers:write",
+  "accounts:read",
+  "accounts:write",
+  "transfers:read",
+  "transfers:write",
+  "ledger:read"
+] as const;
+export type ApiScope = (typeof API_SCOPES)[number];
+
+// Partner API credentials (lib/server/api-keys.ts). Outside row-level security
+// on purpose: a request is matched to its key, and so to its tenant, by
+// `prefix` before any tenant is known. The secret itself is never stored.
+export const apiKeys = pgTable(
+  "apiKey",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenantId")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    prefix: text("prefix").notNull(),
+    // HMAC-SHA256(API_KEY_PEPPER, secret), base64url.
+    secretHash: text("secretHash").notNull(),
+    last4: text("last4").notNull(),
+    scopes: text("scopes").array().notNull(),
+    createdBy: text("createdBy").references(() => users.id, { onDelete: "set null" }),
+    lastUsedAt: timestamp("lastUsedAt", { withTimezone: true }),
+    expiresAt: timestamp("expiresAt", { withTimezone: true }),
+    revokedAt: timestamp("revokedAt", { withTimezone: true }),
+    createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    prefixIdx: uniqueIndex("api_key_prefix_key").on(table.prefix),
+    tenantIdx: index("api_key_tenant_idx").on(table.tenantId, table.createdAt),
+    scopesValid: check(
+      "api_key_scopes_valid",
+      sql.raw(`"scopes" <@ array[${API_SCOPES.map((scope) => `'${scope}'`).join(", ")}]::text[] and cardinality("scopes") > 0`)
+    )
+  })
+);
+
 export const sessions = pgTable(
   "session",
   {
@@ -423,6 +466,7 @@ export const auditEvents = pgTable(
 export const schema = {
   tenants,
   tenantMembers,
+  apiKeys,
   users,
   sessions,
   accounts,

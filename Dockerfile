@@ -15,7 +15,8 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
     DATABASE_URL=postgres://build:build@localhost:5432/build \
     BETTER_AUTH_SECRET=build-time-placeholder-never-used-at-runtime \
     BETTER_AUTH_URL=http://localhost:3000 \
-    PII_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    PII_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+    API_KEY_PEPPER=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 RUN npm run build
 
 # One-shot migration job: docker build --target migrate -t bangkebank-migrate .

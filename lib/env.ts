@@ -24,14 +24,14 @@ function requireAuthSecret() {
   return value;
 }
 
-const PII_KEY_BYTES = 32;
+const KEY_BYTES = 32;
 
-function requirePiiKey() {
-  const value = requireEnv("PII_ENCRYPTION_KEY");
+function requireKey(name: string) {
+  const value = requireEnv(name);
 
-  if (Buffer.from(value, "base64").length !== PII_KEY_BYTES) {
+  if (Buffer.from(value, "base64").length !== KEY_BYTES) {
     throw new Error(
-      `PII_ENCRYPTION_KEY must be ${PII_KEY_BYTES} random bytes, base64-encoded ` +
+      `${name} must be ${KEY_BYTES} random bytes, base64-encoded ` +
         "(generate one with: openssl rand -base64 32)."
     );
   }
@@ -45,6 +45,8 @@ export const env = {
   DATABASE_SSL: process.env.DATABASE_SSL === "true",
   BETTER_AUTH_SECRET: requireAuthSecret(),
   BETTER_AUTH_URL: requireEnv("BETTER_AUTH_URL"),
-  PII_ENCRYPTION_KEY: requirePiiKey(),
+  PII_ENCRYPTION_KEY: requireKey("PII_ENCRYPTION_KEY"),
+  // Keys the HMAC of API key secrets, so a database dump alone can't verify keys.
+  API_KEY_PEPPER: requireKey("API_KEY_PEPPER"),
   NODE_ENV: process.env.NODE_ENV ?? "development"
 };

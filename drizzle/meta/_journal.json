@@ -43,6 +43,13 @@
       "when": 1793207512369,
       "tag": "0005_tenant_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793208461022,
+      "tag": "0006_api_keys",
+      "breakpoints": true
     }
   ]
 }

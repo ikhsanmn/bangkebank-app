@@ -1,6 +1,6 @@
 # Phase 3 plan: tenants and API keys for fintech clients
 
-Status: **in progress**. Tasks 1–4 done (see [Progress](#progress)). Branch:
+Status: **in progress**. Tasks 1–5 done (see [Progress](#progress)). Branch:
 `phase-3-tenants` (from `phase-2-ledger`).
 
 Phase 2 gave every rupiah a ledger, an audit trail and DB-enforced invariants.
@@ -314,3 +314,32 @@ failed transfer each. Then, acting from tenant A against tenant B:
   the 27 RLS and isolation tests fail, exactly the ones that touch that table.
   Restored afterwards.
 - **Verified:** 66/66 tests, lint, typecheck.
+
+### Task 5: API keys (done)
+
+- **Table:** `apiKey` (`drizzle/0006_api_keys.sql`) holds the tenant, name, unique
+  `prefix`, `secretHash`, `last4`, scopes (a check constraint limits them to the
+  seven known scopes and requires at least one), `createdBy`, `lastUsedAt`,
+  `expiresAt`, `revokedAt`. It is outside RLS because a key is matched before
+  any tenant is known; every list, revoke and roll query filters by tenant
+  explicitly, and the RLS coverage test pins the exemption.
+- **Env:** new `API_KEY_PEPPER` (32 bytes, base64), required at startup. Added to
+  `.env.example`, the test config, CI and the Docker build placeholders.
+- **`lib/server/api-keys.ts`:**
+  - `createApiKey` returns the token `bk_test_<8 base62>_<43 base62>` exactly
+    once; only `HMAC-SHA256(pepper, secret)` is stored.
+  - `verifyApiKey` returns `{ id, tenantId, scopes }` or `null`, identical for
+    every failure (malformed, unknown prefix, wrong secret, revoked, expired,
+    suspended tenant). It compares with `timingSafeEqual`, even when the prefix
+    is unknown, and refreshes `lastUsedAt` at most once a minute.
+  - Also: `hasScope`, `listApiKeys` (never returns the hash), `revokeApiKey`
+    (irreversible, owner tenant only) and `rollApiKey` (replacement with the
+    same name and scopes; the old key expires after a grace period, default 24
+    hours).
+  - Create, revoke and roll are audited in the key's tenant, in the same
+    transaction.
+- `tests/api-keys.test.ts` (9 tests) covers storage (no secret anywhere in the
+  row), verification and scopes, the `lastUsedAt` throttle, every rejection
+  case, cross-tenant revoke/roll/list refused, roll with grace and cut-over,
+  scope and name validation, and the audit trail.
+- **Verified:** 75/75 tests, lint, typecheck, `next build`, drift check.

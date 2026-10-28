@@ -37,9 +37,12 @@ describe("row-level security", () => {
        where col.table_schema = 'public' and col.column_name = 'tenantId'
        order by 1
     `);
-    // tenantMember is deliberately outside RLS: the console looks memberships up
-    // by user across tenants before it knows which tenant to scope to.
-    const scoped = result.rows.filter((row) => row.table !== "tenantMember");
+    // Deliberately outside RLS, because they are read before a tenant is known:
+    // the console looks memberships up by user, and the partner API finds a key
+    // (and so its tenant) by prefix. Both are always queried with explicit filters.
+    const unscoped = ["apiKey", "tenantMember"];
+    const scoped = result.rows.filter((row) => !unscoped.includes(row.table));
+    expect(result.rows.filter((row) => unscoped.includes(row.table)).map((row) => row.table)).toEqual(unscoped);
     expect(scoped.map((row) => row.table)).toEqual([
       "auditEvent",
       "bankAccount",
