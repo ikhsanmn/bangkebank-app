@@ -17,6 +17,7 @@
     "db:stop": "bash scripts/db/run-db-command.sh stop",
     "db:migrate": "bash scripts/db/run-db-command.sh migrate",
     "db:studio": "bash scripts/db/run-db-command.sh studio",
+    "db:check-rls": "node scripts/db/check-rls.mjs",
     "tenant:create": "node scripts/tenant/create.mjs",
     "tenant:add-member": "node scripts/tenant/add-member.mjs"
   },

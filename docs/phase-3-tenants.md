@@ -1,7 +1,36 @@
-# Phase 3 plan: tenants and API keys for fintech clients
+# Phase 3: tenants and API keys for fintech clients
 
-Status: **in progress**. Tasks 1–8 done (see [Progress](#progress)). Branch:
+Status: **done**. All nine tasks complete (see [Progress](#progress)). Branch:
 `phase-3-tenants` (from `phase-2-ledger`).
+
+## Summary
+
+- **Tenants.** Every customer, account, ledger row, statement line, transfer,
+  audit event and API request belongs to one tenant. The existing web app is the
+  `demo` tenant.
+- **Isolation, enforced by Postgres twice over:**
+  - composite `(tenantId, id)` foreign keys make a cross-tenant reference
+    impossible;
+  - forced row-level security means the app role sees and writes only the
+    current transaction's tenant;
+  - a query that forgets the tenant fails closed.
+- **Partner API v1:** customers with NIK KYC, accounts, statements, sandbox
+  deposits, idempotent transfers, and the ledger. It uses scoped
+  `bk_test_…` keys (HMAC-hashed, revocable, rollable), per-key rate limiting,
+  a request log, and an OpenAPI 3.1 document generated from the validation
+  schemas.
+- **Tenant console** (`/console`): API keys, audit log, usage and API docs, with
+  owner/admin/viewer roles. Platform admin CLIs `tenant:create` and
+  `tenant:add-member`.
+- **Verification:**
+  - 102 tests;
+  - a CI check that every tenant table has forced RLS;
+  - an end-to-end run with two real tenants over HTTP against the production
+    build (15/15);
+  - the Phase 2 end-to-end script still passes (32/32).
+
+The sections from Goals to Risks below are the original plan, kept as written;
+the Progress section records what was built and where it differed from the plan.
 
 Phase 2 gave every rupiah a ledger, an audit trail and DB-enforced invariants.
 Phase 3 turns the single-bank demo into banking-as-a-service: fintech clients
@@ -513,3 +542,52 @@ npm run tenant:add-member -- --slug acme-pay --email teammate@example.com --role
 - **Verified:** the CLIs against the dev database (create, duplicate, unknown
   owner, add-member, bad argument, with correct exit codes), plus the full
   suite, lint and typecheck.
+
+### Task 9: CI guard, docs and two-tenant end-to-end (done)
+
+- `scripts/db/check-rls.mjs` (`npm run db:check-rls`) lists every table with a
+  `tenantId` column. It fails unless each has RLS enabled, forced, and at
+  least one policy, apart from the documented exemptions (`apiKey`,
+  `tenantMember`). CI runs it right after migrating an empty database.
+  **Mutation check:** a scratch table with a `tenantId` and no RLS made it exit
+  1; dropping the table made it pass again.
+- **README:** Phase 3 overview, the `API_KEY_PEPPER` setup, a partner API and
+  console quick start, the new check, and a link to this document.
+- **End-to-end run** with two tenants created by the CLI, over HTTP against the
+  production server (15/15, clean server log):
+  - both tenants run customers (the same emails in each) → accounts →
+    deposit → transfer → replay;
+  - tenant B gets 404 on all seven paths into tenant A (customer, account,
+    statement, transfer, deposit, transfer from A's account, transfer into A's
+    account), and A's balance is untouched;
+  - B's ledger holds only its own entries, and each tenant's ledger sums to
+    zero;
+  - every balance in the database reconciles;
+  - each tenant's API calls, including B's failed probes, are logged under
+    that tenant;
+  - owner A gets 404 on B's console and can't mint keys for B;
+  - owner A's own demo-tenant banking still works;
+  - the RLS check passes.
+- The Phase 2 end-to-end script still passes against the same build (32/32).
+
+## Known limits after Phase 3
+
+- **Deployment roles:** the app connects with `DATABASE_URL`'s user and switches
+  to `bangkebank_app` per connection. A real deployment should log in as a
+  dedicated role that is only a member of `bangkebank_app`.
+- **FORCE RLS binds the owner:** data migrations run by a non-superuser owner
+  must set `app.tenant_id`.
+- **Rate limit:** a fixed one-minute window from the log; a concurrent burst can
+  overshoot it slightly.
+- **Sandbox deposits** are not idempotent.
+- **Idempotency scope:** transfer idempotency is per (tenant, sending customer,
+  key), not per API key.
+- **Missing features:** no list-customers endpoint, no key rolling or member
+  invitations in the console UI (the library and CLI cover them), and no
+  webhooks (Phase 4).
+- **Pagination precision:** keyset cursors carry millisecond timestamps. Rows
+  written by the app have millisecond precision, but ledger rows migrated
+  from before Phase 2 may carry microseconds and could be skipped at a page
+  boundary.
+- The end-to-end scripts live outside the repo (as in Phase 2); the Vitest suite
+  is the committed regression net.

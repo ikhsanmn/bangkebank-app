@@ -47,6 +47,8 @@ jobs:
         run: |
           PGPASSWORD=bangkebank createdb -h localhost -U bangkebank bangkebank_ci
           npx drizzle-kit migrate
+      - name: Every tenant table has forced row-level security
+        run: npm run db:check-rls
       - run: npm test
       - run: npm run build
 
