@@ -1,14 +1,8 @@
-import { z } from "zod";
-
 import { parseBody, partnerRoute } from "@/lib/server/partner-api";
 import { openAccount } from "@/lib/server/partner";
+import { openAccountSchema } from "@/lib/server/partner-schemas";
 
 export const runtime = "nodejs";
-
-const openAccountSchema = z.object({
-  name: z.string().trim().min(1).max(100),
-  subtype: z.enum(["Savings", "Current"])
-});
 
 // Accounts open with a zero balance; fund them with a sandbox deposit.
 export const POST = partnerRoute(

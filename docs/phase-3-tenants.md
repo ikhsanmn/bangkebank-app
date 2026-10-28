@@ -1,6 +1,6 @@
 # Phase 3 plan: tenants and API keys for fintech clients
 
-Status: **in progress**. Tasks 1–6 done (see [Progress](#progress)). Branch:
+Status: **in progress**. Tasks 1–7 done (see [Progress](#progress)). Branch:
 `phase-3-tenants` (from `phase-2-ledger`).
 
 Phase 2 gave every rupiah a ledger, an audit trail and DB-enforced invariants.
@@ -412,3 +412,67 @@ failed transfer each. Then, acting from tenant A against tenant B:
 - There is no list-customers endpoint yet.
 - Unauthenticated calls aren't logged (they have no tenant); they show only in
   server logs.
+
+### Task 7: OpenAPI document and tenant console (done)
+
+**OpenAPI:**
+- `lib/server/partner-schemas.ts` now holds every request and response schema.
+  The routes validate with them, and `lib/server/openapi.ts` turns them into
+  an OpenAPI 3.1 document (zod 4 `toJSONSchema`), so the published rules are
+  the enforced rules.
+- The document is served publicly at `/api/v1/openapi.json`, with the bearer
+  security scheme, per-operation scope (`x-scope`), the `Idempotency-Key`
+  header, pagination parameters, and the shared 401/403/429 responses.
+
+**Console** (`/console`):
+- **Access:** staff sign in with ordinary web accounts (demo tenant). A
+  `tenantMember` row gives them `owner`, `admin` or `viewer` in a tenant.
+- **Pages** (`/console/[slug]/…`):
+  - **API keys:** a masked list with status and last use, create (the token is
+    shown once with a copy button), revoke with confirmation. Owners and admins
+    only; viewers see the list.
+  - **Audit log:** the tenant's events, newest first, filterable by action,
+    keyset-paged.
+  - **Usage:** requests and error rate over 14 days, requests per Jakarta day,
+    per-endpoint totals, error rate and p95 latency.
+  - **API docs:** endpoints from the same operation list, a sandbox curl
+    walkthrough, and a link to the OpenAPI JSON.
+- **Writes** go through `POST /api/console/[slug]/keys` and
+  `/api/console/[slug]/keys/[keyId]/revoke`. They are cookie-authenticated, so
+  the same-origin gate applies; 401 signed out, 404 non-member, 403 viewer; the
+  token response is `Cache-Control: no-store`. Actions are audited with the
+  staff member as actor.
+- `lib/server/console.ts` covers memberships, the audit log and usage;
+  `lib/console-session.ts` is the membership guard.
+
+**Bug found by the HTTP check:** Next renders a layout and its page in parallel,
+so the layout's `notFound()` didn't stop a page from running for a non-member.
+The response was still 404, but the page threw on the missing membership. Every
+console page now checks membership itself through `requireConsoleMembership`.
+
+**Tests:** `tests/console.test.ts` (9):
+- the OpenAPI document covers every operation, each with an existing route
+  file; it publishes the enforced transfer rules; it is served publicly;
+- memberships are listed only for the user;
+- key creation is allowed for admins (audited with the actor), and refused for
+  viewers (403), non-members and other tenants' admins (404), anonymous users
+  (401) and unknown scopes (400);
+- revoke works only on the tenant's own keys;
+- the audit log pages and filters;
+- the usage summary is per tenant;
+- staff stay in the demo tenant.
+
+**Verified:** 98/98 tests, lint, typecheck, `next build`, drift check, and an
+HTTP check against the production server (20/20, clean server log):
+- sign-up, `/console` and each page render; the index redirects to keys;
+- an unknown tenant gives 404, and signed-out users are redirected to sign-in;
+- a key created in the console is shown once and works on `/api/v1`; the keys
+  page shows it masked, never the secret;
+- a cross-site console POST gets 403;
+- the audit and usage pages reflect the call;
+- revoke makes the key fail with 401;
+- a viewer gets 403 and sees no create form;
+- the OpenAPI document is public.
+
+**Not in the UI yet:** rolling a key (the library supports it) and inviting
+members (task 8's admin script adds them).

@@ -1,18 +1,8 @@
-import { z } from "zod";
-
-import { MAX_TRANSFER_RUPIAH } from "@/lib/format";
 import { ApiError, parseBody, partnerRoute } from "@/lib/server/partner-api";
 import { createPartnerTransfer } from "@/lib/server/partner";
+import { createTransferSchema } from "@/lib/server/partner-schemas";
 
 export const runtime = "nodejs";
-
-const createTransferSchema = z.object({
-  fromAccountId: z.string().uuid(),
-  toAccountId: z.string().uuid(),
-  // Whole rupiah, capped at the BI-FAST per-transfer limit.
-  amount: z.number().int().positive().max(MAX_TRANSFER_RUPIAH),
-  note: z.string().max(280).optional()
-});
 
 // 201 settled, 200 replayed (same Idempotency-Key and payload), 422 when the
 // attempt failed for lack of funds; the failed transfer is still returned.

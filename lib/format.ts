@@ -24,6 +24,17 @@ export function formatDate(value: string | Date) {
   return dateFormatter.format(typeof value === "string" ? new Date(value) : value);
 }
 
+const dateTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Asia/Jakarta"
+});
+
+// Date and time in Jakarta (WIB), for logs.
+export function formatDateTime(value: string | Date) {
+  return `${dateTimeFormatter.format(typeof value === "string" ? new Date(value) : value)} WIB`;
+}
+
 // Accepts "1500000" or "1.500.000" and returns whole rupiah, or null.
 export function parseRupiah(input: string) {
   const compact = input.trim().replace(/\./g, "");

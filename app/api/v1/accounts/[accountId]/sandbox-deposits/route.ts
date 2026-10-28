@@ -1,14 +1,8 @@
-import { z } from "zod";
-
-import { MAX_TRANSFER_RUPIAH } from "@/lib/format";
 import { depositSandboxFunds, TransferError } from "@/lib/server/banking";
 import { ApiError, parseBody, partnerRoute } from "@/lib/server/partner-api";
+import { depositSchema } from "@/lib/server/partner-schemas";
 
 export const runtime = "nodejs";
-
-const depositSchema = z.object({
-  amount: z.number().int().positive().max(MAX_TRANSFER_RUPIAH)
-});
 
 // Sandbox-only test helper: credits play money from SANDBOX_FUNDING so a
 // partner can fund the customers it creates. Not idempotent.
