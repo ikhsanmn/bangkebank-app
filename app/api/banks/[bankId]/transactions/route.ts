@@ -1,35 +1,51 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 
-import { ensureDatabase } from "@/lib/db/bootstrap";
+import { unauthorized } from "@/lib/server/http";
 import { getRequestSession } from "@/lib/session";
-import { listTimelineForUser } from "@/lib/server/banking";
+import { getBankForUser, listTimelineForUser } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
+
+const querySchema = z.object({
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20)
+});
 
 export async function GET(
   request: Request,
   context: { params: { bankId: string } }
 ) {
-  await ensureDatabase();
   const session = await getRequestSession(request);
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return unauthorized();
   }
 
   const { searchParams } = new URL(request.url);
-  const page = Number(searchParams.get("page") ?? "1");
-  const pageSize = Number(searchParams.get("pageSize") ?? "20");
+  const query = querySchema.safeParse({
+    page: searchParams.get("page") ?? undefined,
+    pageSize: searchParams.get("pageSize") ?? undefined
+  });
 
+  if (!query.success) {
+    return NextResponse.json(
+      { error: "Invalid pagination", issues: query.error.flatten() },
+      { status: 400 }
+    );
+  }
+
+  const bank = await getBankForUser(session.user.id, context.params.bankId);
+  if (!bank) {
+    return NextResponse.json({ error: "Bank account not found." }, { status: 404 });
+  }
+
+  const { page, pageSize } = query.data;
   const transactions = await listTimelineForUser(session.user.id, {
-    bankAccountId: context.params.bankId,
+    bankAccountId: bank.id,
     page,
     pageSize
   });
 
-  return NextResponse.json({
-    transactions,
-    page,
-    pageSize
-  });
+  return NextResponse.json({ transactions, page, pageSize });
 }

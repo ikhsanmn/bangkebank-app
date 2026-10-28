@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   numeric,
   pgTable,
@@ -128,7 +130,11 @@ export const bankAccounts = pgTable(
   },
   (table) => ({
     userIdx: index("bank_account_user_idx").on(table.userId),
-    shareableIdx: uniqueIndex("bank_account_shareable_key").on(table.shareableId)
+    shareableIdx: uniqueIndex("bank_account_shareable_key").on(table.shareableId),
+    availableNonNegative: check(
+      "bank_account_available_non_negative",
+      sql`${table.availableBalance} >= 0`
+    )
   })
 );
 
@@ -138,10 +144,10 @@ export const bankTransactions = pgTable(
     id: text("id").primaryKey(),
     userId: text("userId")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+      .references(() => users.id, { onDelete: "restrict" }),
     bankAccountId: text("bankAccountId")
       .notNull()
-      .references(() => bankAccounts.id, { onDelete: "cascade" }),
+      .references(() => bankAccounts.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     amount: numeric("amount", { precision: 12, scale: 2, mode: "number" })
       .notNull()
@@ -157,7 +163,12 @@ export const bankTransactions = pgTable(
   (table) => ({
     userIdx: index("bank_transaction_user_idx").on(table.userId),
     bankIdx: index("bank_transaction_bank_idx").on(table.bankAccountId),
-    occurredIdx: index("bank_transaction_occurred_idx").on(table.occurredAt)
+    occurredIdx: index("bank_transaction_occurred_idx").on(table.occurredAt),
+    amountPositive: check("bank_transaction_amount_positive", sql`${table.amount} > 0`),
+    directionValid: check(
+      "bank_transaction_direction_valid",
+      sql`${table.direction} in ('credit', 'debit')`
+    )
   })
 );
 
@@ -167,10 +178,10 @@ export const transfers = pgTable(
     id: text("id").primaryKey(),
     senderUserId: text("senderUserId")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+      .references(() => users.id, { onDelete: "restrict" }),
     senderBankAccountId: text("senderBankAccountId")
       .notNull()
-      .references(() => bankAccounts.id, { onDelete: "cascade" }),
+      .references(() => bankAccounts.id, { onDelete: "restrict" }),
     receiverUserId: text("receiverUserId").references(() => users.id, {
       onDelete: "set null"
     }),
@@ -186,14 +197,20 @@ export const transfers = pgTable(
       .default(0),
     note: text("note"),
     status: text("status").notNull().default("Processing"),
-    channel: text("channel").notNull().default("ACH"),
+    channel: text("channel").notNull().default("Sandbox transfer"),
+    idempotencyKey: text("idempotencyKey"),
     createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completedAt", { withTimezone: true })
   },
   (table) => ({
     senderIdx: index("transfer_sender_idx").on(table.senderUserId),
     receiverIdx: index("transfer_receiver_idx").on(table.receiverUserId),
-    senderBankIdx: index("transfer_sender_bank_idx").on(table.senderBankAccountId)
+    senderBankIdx: index("transfer_sender_bank_idx").on(table.senderBankAccountId),
+    idempotencyIdx: uniqueIndex("transfer_sender_idempotency_key").on(
+      table.senderUserId,
+      table.idempotencyKey
+    ),
+    amountPositive: check("transfer_amount_positive", sql`${table.amount} > 0`)
   })
 );
 

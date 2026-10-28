@@ -1,11 +1,14 @@
+import type { Route } from "next";
+import Link from "next/link";
 import { ArrowRight, Building2, Wallet2 } from "lucide-react";
 
 import { CopyShareableId } from "@/components/horizon/copy-shareable-id";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatCurrency, type BankAccount } from "@/lib/mock-data";
+import { formatCurrency } from "@/lib/format";
+import type { AccountView } from "@/lib/views";
 
-export function AccountCard({ account }: { account: BankAccount }) {
+export function AccountCard({ account }: { account: AccountView }) {
   return (
     <Card className="overflow-hidden border-0 bg-white/90 shadow-sm">
       <div className={`h-40 bg-gradient-to-br ${account.tone} p-6 text-white`}>
@@ -52,10 +55,13 @@ export function AccountCard({ account }: { account: BankAccount }) {
           </div>
         </div>
 
-        <button className="flex items-center gap-2 text-sm font-medium text-[#24556a] transition-colors hover:text-[#091c31]">
+        <Link
+          href={`/transaction-history?account=${account.id}` as Route}
+          className="flex items-center gap-2 text-sm font-medium text-[#24556a] transition-colors hover:text-[#091c31]"
+        >
           View account activity
           <ArrowRight className="size-4" />
-        </button>
+        </Link>
       </CardContent>
     </Card>
   );

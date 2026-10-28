@@ -9,13 +9,13 @@ const globalForDb = globalThis as typeof globalThis & {
 };
 
 function createPool() {
-  const useSsl =
-    !env.DATABASE_URL.includes("localhost") &&
-    !env.DATABASE_URL.includes("127.0.0.1");
-
   return new Pool({
     connectionString: env.DATABASE_URL,
-    ssl: useSsl ? { rejectUnauthorized: false } : false
+    // TLS is opt-in via DATABASE_SSL and always verifies the server certificate.
+    ssl: env.DATABASE_SSL ? { rejectUnauthorized: true } : false,
+    max: 10,
+    connectionTimeoutMillis: 5_000,
+    idleTimeoutMillis: 30_000
   });
 }
 

@@ -2,11 +2,8 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/lib/auth";
-import { ensureDatabase } from "@/lib/db/bootstrap";
 
 export async function getServerSession() {
-  await ensureDatabase();
-
   return auth.api.getSession({
     headers: headers()
   });
@@ -23,8 +20,6 @@ export async function requireServerSession() {
 }
 
 export async function getRequestSession(request: Request) {
-  await ensureDatabase();
-
   return auth.api.getSession({
     headers: request.headers
   });

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { bankAccounts, bankTransactions, transfers, users } from "@/lib/db/schema";
@@ -75,7 +75,7 @@ export async function seedUserWorkspace(userId: string) {
       status: "Completed",
       channel: "In store",
       category: "Groceries",
-      source: "Plaid Sync",
+      source: "Sandbox seed",
       occurredAt: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000)
     },
     {
@@ -88,7 +88,7 @@ export async function seedUserWorkspace(userId: string) {
       status: "Completed",
       channel: "Bank deposit",
       category: "Income",
-      source: "Plaid Sync",
+      source: "Sandbox seed",
       occurredAt: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000)
     },
     {
@@ -101,7 +101,7 @@ export async function seedUserWorkspace(userId: string) {
       status: "Completed",
       channel: "Card subscription",
       category: "Software",
-      source: "Plaid Sync",
+      source: "Sandbox seed",
       occurredAt: new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000)
     },
     {
@@ -114,7 +114,7 @@ export async function seedUserWorkspace(userId: string) {
       status: "Completed",
       channel: "ACH",
       category: "Housing",
-      source: "Plaid Sync",
+      source: "Sandbox seed",
       occurredAt: new Date(now.getTime() - 4 * 24 * 60 * 60 * 1000)
     },
     {
@@ -127,7 +127,7 @@ export async function seedUserWorkspace(userId: string) {
       status: "Completed",
       channel: "Online",
       category: "Travel",
-      source: "Plaid Sync",
+      source: "Sandbox seed",
       occurredAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
     },
     {
@@ -140,7 +140,7 @@ export async function seedUserWorkspace(userId: string) {
       status: "Completed",
       channel: "Bank deposit",
       category: "Interest",
-      source: "Plaid Sync",
+      source: "Sandbox seed",
       occurredAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000)
     }
   ];
@@ -156,6 +156,18 @@ export async function listBanksForUser(userId: string) {
     .orderBy(bankAccounts.createdAt);
 }
 
+export async function getBankForUser(userId: string, bankAccountId: string) {
+  const [bank] = await db
+    .select()
+    .from(bankAccounts)
+    .where(and(eq(bankAccounts.id, bankAccountId), eq(bankAccounts.userId, userId)))
+    .limit(1);
+
+  return bank ?? null;
+}
+
+// New accounts always open empty. Balances only change through transfers, so a
+// client can never declare money into existence.
 export async function createBankForUser(
   userId: string,
   input: {
@@ -163,8 +175,6 @@ export async function createBankForUser(
     name: string;
     subtype: string;
     mask: string;
-    currentBalance: number;
-    availableBalance: number;
     routingHint?: string;
   }
 ) {
@@ -178,14 +188,16 @@ export async function createBankForUser(
       subtype: input.subtype,
       mask: input.mask,
       shareableId: buildShareableId(),
-      currentBalance: money(input.currentBalance),
-      availableBalance: money(input.availableBalance),
-      routingHint: input.routingHint ?? "Funding source active"
+      currentBalance: 0,
+      availableBalance: 0,
+      routingHint: input.routingHint ?? "Sandbox account"
     })
     .returning();
 
   return bank;
 }
+
+const MAX_PAGE_SIZE = 100;
 
 export async function listTimelineForUser(
   userId: string,
@@ -193,10 +205,12 @@ export async function listTimelineForUser(
     bankAccountId?: string;
     page?: number;
     pageSize?: number;
+    // Extra rows fetched past the page so callers can tell whether a next page exists.
+    lookahead?: number;
   }
 ) {
-  const page = options?.page ?? 1;
-  const pageSize = options?.pageSize ?? 20;
+  const page = Math.max(1, Math.floor(options?.page ?? 1));
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(options?.pageSize ?? 20)));
   const offset = (page - 1) * pageSize;
   const where = options?.bankAccountId
     ? and(
@@ -205,15 +219,13 @@ export async function listTimelineForUser(
       )
     : eq(bankTransactions.userId, userId);
 
-  const items = await db
+  return db
     .select()
     .from(bankTransactions)
     .where(where)
-    .orderBy(desc(bankTransactions.occurredAt))
-    .limit(pageSize)
+    .orderBy(desc(bankTransactions.occurredAt), desc(bankTransactions.id))
+    .limit(pageSize + (options?.lookahead ?? 0))
     .offset(offset);
-
-  return items;
 }
 
 export async function listTransfersForUser(userId: string) {
@@ -224,9 +236,12 @@ export async function listTransfersForUser(userId: string) {
     .orderBy(desc(transfers.createdAt));
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CATEGORY_WINDOW_DAYS = 30;
+const FLOW_WINDOW_DAYS = 7;
+
 export async function getDashboardData(userId: string) {
   const accountsForUser = await listBanksForUser(userId);
-  const accountIds = accountsForUser.map((account) => account.id);
   const recent = await listTimelineForUser(userId, { pageSize: 8 });
 
   const totalBalance = accountsForUser.reduce(
@@ -238,42 +253,51 @@ export async function getDashboardData(userId: string) {
     0
   );
 
-  const categories = recent
-    .filter((item) => item.direction === "debit")
-    .reduce<Record<string, number>>((acc, item) => {
-      acc[item.category] = money((acc[item.category] ?? 0) + Number(item.amount));
-      return acc;
-    }, {});
+  const categoryRows = await db
+    .select({
+      label: bankTransactions.category,
+      value: sql<string>`sum(${bankTransactions.amount})`
+    })
+    .from(bankTransactions)
+    .where(
+      and(
+        eq(bankTransactions.userId, userId),
+        eq(bankTransactions.direction, "debit"),
+        gte(bankTransactions.occurredAt, new Date(Date.now() - CATEGORY_WINDOW_DAYS * DAY_MS))
+      )
+    )
+    .groupBy(bankTransactions.category)
+    .orderBy(desc(sql`sum(${bankTransactions.amount})`))
+    .limit(5);
 
-  const categoryBreakdown = Object.entries(categories)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([label, value]) => ({ label, value }));
-
-  const balancesByDay = Array.from({ length: 7 }, (_, index) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (6 - index));
-    const label = date.toLocaleDateString("en-US", { weekday: "short" });
-
-    return { label, value: 0 };
-  });
-
-  for (const entry of recent) {
-    const label = new Date(entry.occurredAt).toLocaleDateString("en-US", {
-      weekday: "short"
-    });
-    const day = balancesByDay.find((item) => item.label === label);
-
-    if (day) {
-      day.value += entry.direction === "credit" ? Number(entry.amount) : -Number(entry.amount);
-    }
-  }
-
-  const largest = Math.max(...balancesByDay.map((item) => Math.abs(item.value)), 1);
-  const weeklyBalances = balancesByDay.map((item) => ({
-    label: item.label,
-    value: Math.max(20, Math.round((Math.abs(item.value) / largest) * 100))
+  const categoryBreakdown = categoryRows.map((row) => ({
+    label: row.label,
+    value: money(Number(row.value))
   }));
+
+  // Net money in minus money out per calendar day (UTC) for the last week.
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const flowStart = new Date(today.getTime() - (FLOW_WINDOW_DAYS - 1) * DAY_MS);
+
+  const flowRows = await db
+    .select({
+      day: sql<string>`to_char(date_trunc('day', ${bankTransactions.occurredAt} at time zone 'UTC'), 'YYYY-MM-DD')`,
+      net: sql<string>`sum(case when ${bankTransactions.direction} = 'credit' then ${bankTransactions.amount} else -${bankTransactions.amount} end)`
+    })
+    .from(bankTransactions)
+    .where(and(eq(bankTransactions.userId, userId), gte(bankTransactions.occurredAt, flowStart)))
+    .groupBy(sql`1`);
+
+  const netByDay = new Map(flowRows.map((row) => [row.day, Number(row.net)]));
+  const dailyNetFlow = Array.from({ length: FLOW_WINDOW_DAYS }, (_, index) => {
+    const date = new Date(flowStart.getTime() + index * DAY_MS);
+    const key = date.toISOString().slice(0, 10);
+    return {
+      label: date.toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" }),
+      value: money(netByDay.get(key) ?? 0)
+    };
+  });
 
   return {
     totals: {
@@ -284,11 +308,46 @@ export async function getDashboardData(userId: string) {
     accounts: accountsForUser,
     recentTransactions: recent,
     categoryBreakdown,
-    weeklyBalances,
-    accountIds
+    dailyNetFlow
   };
 }
 
+export class TransferError extends Error {
+  constructor(
+    message: string,
+    readonly status: 404 | 409 | 422
+  ) {
+    super(message);
+    this.name = "TransferError";
+  }
+}
+
+const UNIQUE_VIOLATION = "23505";
+
+// Drizzle wraps driver errors, so the Postgres code may sit on `cause`.
+function isUniqueViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const { code, cause } = error as { code?: string; cause?: unknown };
+  return code === UNIQUE_VIOLATION || isUniqueViolation(cause);
+}
+
+async function findTransferByIdempotencyKey(senderUserId: string, key: string) {
+  const [existing] = await db
+    .select()
+    .from(transfers)
+    .where(and(eq(transfers.senderUserId, senderUserId), eq(transfers.idempotencyKey, key)))
+    .limit(1);
+
+  return existing ?? null;
+}
+
+// Moves money between two accounts in one transaction. Both rows are locked in
+// id order (so concurrent transfers can't deadlock), the debit is a conditional
+// UPDATE that only succeeds while funds suffice, and all arithmetic happens in
+// Postgres numeric rather than JS floats. A repeated Idempotency-Key returns the
+// original transfer instead of moving money twice.
 export async function createTransferForUser(
   senderUserId: string,
   input: {
@@ -297,120 +356,156 @@ export async function createTransferForUser(
     recipientShareableId: string;
     amount: number;
     note?: string;
+    idempotencyKey?: string;
   }
 ) {
   const amount = money(input.amount);
+  const idempotencyKey = input.idempotencyKey ?? null;
 
-  return db.transaction(async (tx) => {
-    const [senderBank] = await tx
-      .select()
-      .from(bankAccounts)
-      .where(
-        and(
-          eq(bankAccounts.id, input.senderBankAccountId),
-          eq(bankAccounts.userId, senderUserId)
+  if (idempotencyKey) {
+    const existing = await findTransferByIdempotencyKey(senderUserId, idempotencyKey);
+    if (existing) {
+      return { transfer: existing, replayed: true };
+    }
+  }
+
+  try {
+    const transfer = await db.transaction(async (tx) => {
+      const [receiverBank] = await tx
+        .select()
+        .from(bankAccounts)
+        .where(eq(bankAccounts.shareableId, input.recipientShareableId))
+        .limit(1);
+
+      if (!receiverBank) {
+        throw new TransferError("No account matches that shareable ID.", 404);
+      }
+
+      if (receiverBank.id === input.senderBankAccountId) {
+        throw new TransferError("Choose a different account to receive the transfer.", 422);
+      }
+
+      const [receiverUser] = await tx
+        .select({ id: users.id, name: users.name, email: users.email })
+        .from(users)
+        .where(eq(users.id, receiverBank.userId))
+        .limit(1);
+
+      if (
+        !receiverUser ||
+        receiverUser.email.toLowerCase() !== input.recipientEmail.trim().toLowerCase()
+      ) {
+        throw new TransferError(
+          "The recipient email does not match the owner of that shareable ID.",
+          422
+        );
+      }
+
+      const locked = await tx
+        .select()
+        .from(bankAccounts)
+        .where(inArray(bankAccounts.id, [input.senderBankAccountId, receiverBank.id]))
+        .orderBy(asc(bankAccounts.id))
+        .for("update");
+
+      const senderBank = locked.find(
+        (row) => row.id === input.senderBankAccountId && row.userId === senderUserId
+      );
+
+      if (!senderBank) {
+        throw new TransferError("Sender bank account not found.", 404);
+      }
+
+      const now = new Date();
+      const [debited] = await tx
+        .update(bankAccounts)
+        .set({
+          currentBalance: sql`${bankAccounts.currentBalance} - ${amount}`,
+          availableBalance: sql`${bankAccounts.availableBalance} - ${amount}`,
+          updatedAt: now
+        })
+        .where(
+          and(eq(bankAccounts.id, senderBank.id), gte(bankAccounts.availableBalance, amount))
         )
-      )
-      .limit(1);
+        .returning({ id: bankAccounts.id });
 
-    if (!senderBank) {
-      throw new Error("Sender bank account not found.");
-    }
+      if (!debited) {
+        throw new TransferError("Insufficient available balance for this transfer.", 422);
+      }
 
-    if (Number(senderBank.availableBalance) < amount) {
-      throw new Error("Insufficient available balance for this transfer.");
-    }
-
-    const [receiverBank] = await tx
-      .select()
-      .from(bankAccounts)
-      .where(eq(bankAccounts.shareableId, input.recipientShareableId))
-      .limit(1);
-
-    const [receiverUser] = receiverBank
-      ? await tx
-          .select({
-            id: users.id,
-            name: users.name,
-            email: users.email
-          })
-          .from(users)
-          .where(eq(users.id, receiverBank.userId))
-          .limit(1)
-      : [];
-
-    const transferId = crypto.randomUUID();
-    const completedAt = new Date();
-
-    const [transfer] = await tx
-      .insert(transfers)
-      .values({
-        id: transferId,
-        senderUserId,
-        senderBankAccountId: senderBank.id,
-        receiverUserId: receiverBank?.userId ?? null,
-        receiverBankAccountId: receiverBank?.id ?? null,
-        recipientName: receiverUser?.name ?? "Recipient",
-        recipientEmail: receiverUser?.email ?? input.recipientEmail,
-        recipientShareableId: input.recipientShareableId,
-        amount,
-        note: input.note ?? "",
-        status: "Completed",
-        channel: "ACH",
-        completedAt
-      })
-      .returning();
-
-    await tx
-      .update(bankAccounts)
-      .set({
-        currentBalance: money(Number(senderBank.currentBalance) - amount),
-        availableBalance: money(Number(senderBank.availableBalance) - amount),
-        updatedAt: completedAt
-      })
-      .where(eq(bankAccounts.id, senderBank.id));
-
-    await tx.insert(bankTransactions).values({
-      id: crypto.randomUUID(),
-      userId: senderUserId,
-      bankAccountId: senderBank.id,
-      name: `ACH Transfer to ${receiverUser?.name ?? input.recipientEmail}`,
-      amount,
-      direction: "debit",
-      status: "Completed",
-      channel: "ACH",
-      category: "Transfer",
-      source: "Internal Transfer",
-      occurredAt: completedAt
-    });
-
-    if (receiverBank) {
       await tx
         .update(bankAccounts)
         .set({
-          currentBalance: money(Number(receiverBank.currentBalance) + amount),
-          availableBalance: money(Number(receiverBank.availableBalance) + amount),
-          updatedAt: completedAt
+          currentBalance: sql`${bankAccounts.currentBalance} + ${amount}`,
+          availableBalance: sql`${bankAccounts.availableBalance} + ${amount}`,
+          updatedAt: now
         })
         .where(eq(bankAccounts.id, receiverBank.id));
 
-      await tx.insert(bankTransactions).values({
-        id: crypto.randomUUID(),
-        userId: receiverBank.userId,
-        bankAccountId: receiverBank.id,
-        name: `Inbound transfer from ${senderBank.name}`,
-        amount,
-        direction: "credit",
-        status: "Completed",
-        channel: "ACH",
-        category: "Transfer",
-        source: "Internal Transfer",
-        occurredAt: completedAt
-      });
-    }
+      const [created] = await tx
+        .insert(transfers)
+        .values({
+          id: crypto.randomUUID(),
+          senderUserId,
+          senderBankAccountId: senderBank.id,
+          receiverUserId: receiverBank.userId,
+          receiverBankAccountId: receiverBank.id,
+          recipientName: receiverUser.name,
+          recipientEmail: receiverUser.email,
+          recipientShareableId: input.recipientShareableId,
+          amount,
+          note: input.note ?? "",
+          status: "Completed",
+          channel: "Sandbox transfer",
+          idempotencyKey,
+          completedAt: now
+        })
+        .returning();
 
-    return transfer;
-  });
+      await tx.insert(bankTransactions).values([
+        {
+          id: crypto.randomUUID(),
+          userId: senderUserId,
+          bankAccountId: senderBank.id,
+          name: `Transfer to ${receiverUser.name}`,
+          amount,
+          direction: "debit",
+          status: "Completed",
+          channel: "Sandbox transfer",
+          category: "Transfer",
+          source: "Internal Transfer",
+          occurredAt: now
+        },
+        {
+          id: crypto.randomUUID(),
+          userId: receiverBank.userId,
+          bankAccountId: receiverBank.id,
+          name: `Transfer from ${senderBank.name}`,
+          amount,
+          direction: "credit",
+          status: "Completed",
+          channel: "Sandbox transfer",
+          category: "Transfer",
+          source: "Internal Transfer",
+          occurredAt: now
+        }
+      ]);
+
+      return created;
+    });
+
+    return { transfer, replayed: false };
+  } catch (error) {
+    // Two requests with the same key raced past the pre-check; the unique index
+    // let exactly one commit, so hand back that one.
+    if (idempotencyKey && isUniqueViolation(error)) {
+      const existing = await findTransferByIdempotencyKey(senderUserId, idempotencyKey);
+      if (existing) {
+        return { transfer: existing, replayed: true };
+      }
+    }
+    throw error;
+  }
 }
 
 export async function getUserProfile(userId: string) {
@@ -430,12 +525,4 @@ export async function getUserProfile(userId: string) {
     .limit(1);
 
   return profile ?? null;
-}
-
-export async function listBanksByIds(ids: string[]) {
-  if (ids.length === 0) {
-    return [];
-  }
-
-  return db.select().from(bankAccounts).where(inArray(bankAccounts.id, ids));
 }

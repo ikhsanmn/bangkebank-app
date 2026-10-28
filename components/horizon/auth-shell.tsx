@@ -27,25 +27,24 @@ export function AuthShell({
                 Financial clarity built around every account you already use.
               </h1>
               <p className="max-w-lg text-base leading-7 text-white/70">
-                BangkeBank pulls together multi-bank balances, transaction history,
-                and ACH transfers into one calm control room for personal money
-                management.
+                A portfolio demo of a banking app: accounts, transaction history,
+                and transfers between users, running entirely on sandbox balances.
               </p>
             </div>
           </div>
 
           <div className="grid gap-4 rounded-[32px] border border-white/10 bg-white/5 p-6 backdrop-blur md:grid-cols-3">
             <div>
-              <p className="text-3xl font-semibold">$46.0K</p>
-              <p className="mt-2 text-sm text-white/65">Combined balance view</p>
+              <p className="text-3xl font-semibold">Sandbox</p>
+              <p className="mt-2 text-sm text-white/65">Demo balances, no real money</p>
             </div>
             <div>
-              <p className="text-3xl font-semibold">3 banks</p>
-              <p className="mt-2 text-sm text-white/65">Connected in one workspace</p>
+              <p className="text-3xl font-semibold">3 accounts</p>
+              <p className="mt-2 text-sm text-white/65">Created for you at sign-up</p>
             </div>
             <div>
-              <p className="text-3xl font-semibold">ACH ready</p>
-              <p className="mt-2 text-sm text-white/65">Transfer with shareable account IDs</p>
+              <p className="text-3xl font-semibold">Instant</p>
+              <p className="mt-2 text-sm text-white/65">Transfers with shareable account IDs</p>
             </div>
           </div>
         </div>

@@ -2,29 +2,34 @@ import { Building2, Link2, ShieldCheck } from "lucide-react";
 
 import { AccountCard } from "@/components/horizon/account-card";
 import { PageHeader } from "@/components/horizon/page-header";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { bankAccounts, formatCurrency, totalBalance } from "@/lib/mock-data";
+import { formatCurrency } from "@/lib/format";
+import { listBanksForUser } from "@/lib/server/banking";
+import { requireServerSession } from "@/lib/session";
+import { toAccountView } from "@/lib/views";
 
-export default function MyBanksPage() {
+export default async function MyBanksPage() {
+  const session = await requireServerSession();
+  const accounts = (await listBanksForUser(session.user.id)).map(toAccountView);
+  const totalBalance = accounts.reduce((sum, account) => sum + account.balance, 0);
+  const institutions = new Set(accounts.map((account) => account.institution)).size;
+
   return (
     <div className="space-y-8">
       <PageHeader
         eyebrow="My Banks"
-        title="All connected accounts"
-        description="Browse every linked bank, check balances and available cash, and copy a shareable account ID when someone needs to send you money."
+        title="Your accounts"
+        description="Check balances and available cash, and copy an account's shareable ID when someone needs to send you money."
       />
 
       <section className="grid gap-4 md:grid-cols-3">
         <Card className="border-0 bg-white/80 shadow-sm">
           <CardContent className="flex items-start justify-between p-6">
             <div>
-              <p className="text-sm text-slate-500">Total linked institutions</p>
-              <p className="mt-2 text-3xl font-semibold text-[#091c31]">
-                {bankAccounts.length}
-              </p>
+              <p className="text-sm text-slate-500">Institutions</p>
+              <p className="mt-2 text-3xl font-semibold text-[#091c31]">{institutions}</p>
             </div>
-            <Building2 className="size-5 text-[#24556a]" />
+            <Building2 className="size-5 text-[#24556a]" aria-hidden />
           </CardContent>
         </Card>
         <Card className="border-0 bg-white/80 shadow-sm">
@@ -35,40 +40,33 @@ export default function MyBanksPage() {
                 {formatCurrency(totalBalance)}
               </p>
             </div>
-            <ShieldCheck className="size-5 text-[#24556a]" />
+            <ShieldCheck className="size-5 text-[#24556a]" aria-hidden />
           </CardContent>
         </Card>
         <Card className="border-0 bg-white/80 shadow-sm">
           <CardContent className="flex items-start justify-between p-6">
             <div>
-              <p className="text-sm text-slate-500">Shareable IDs ready</p>
-              <p className="mt-2 text-3xl font-semibold text-[#091c31]">100%</p>
+              <p className="text-sm text-slate-500">Accounts</p>
+              <p className="mt-2 text-3xl font-semibold text-[#091c31]">{accounts.length}</p>
             </div>
-            <Link2 className="size-5 text-[#24556a]" />
+            <Link2 className="size-5 text-[#24556a]" aria-hidden />
           </CardContent>
         </Card>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-3">
-        {bankAccounts.map((account) => (
-          <AccountCard key={account.id} account={account} />
-        ))}
-      </section>
-
-      <Card className="border-0 bg-white/80 shadow-sm">
-        <CardContent className="flex flex-col gap-4 p-6 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="font-medium text-[#091c31]">
-              Plaid Link and Dwolla funding sources are still mocked in this build.
-            </p>
-            <p className="mt-2 text-sm text-slate-500">
-              The cards above now sit on top of the new PostgreSQL and Better Auth
-              backend, and are ready for live Plaid and Dwolla integrations next.
-            </p>
-          </div>
-          <Badge variant="outline">Backend ready</Badge>
-        </CardContent>
-      </Card>
+      {accounts.length === 0 ? (
+        <Card className="border-0 bg-white/80 shadow-sm">
+          <CardContent className="p-6 text-sm text-slate-500">
+            You don&apos;t have any accounts yet.
+          </CardContent>
+        </Card>
+      ) : (
+        <section className="grid gap-6 xl:grid-cols-3">
+          {accounts.map((account) => (
+            <AccountCard key={account.id} account={account} />
+          ))}
+        </section>
+      )}
     </div>
   );
 }

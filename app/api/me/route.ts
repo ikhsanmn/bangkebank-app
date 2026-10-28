@@ -1,23 +1,19 @@
 import { NextResponse } from "next/server";
 
-import { ensureDatabase } from "@/lib/db/bootstrap";
+import { unauthorized } from "@/lib/server/http";
 import { getRequestSession } from "@/lib/session";
 import { getUserProfile } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
 
+// Returns an explicit field list; identity data (DOB, address, SSN digits) stays server-side.
 export async function GET(request: Request) {
-  await ensureDatabase();
   const session = await getRequestSession(request);
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return unauthorized();
   }
 
   const profile = await getUserProfile(session.user.id);
-
-  return NextResponse.json({
-    user: session.user,
-    profile
-  });
+  return NextResponse.json({ profile });
 }

@@ -1,110 +1,141 @@
-import { ChevronLeft, ChevronRight, Filter, History } from "lucide-react";
+import type { Route } from "next";
+import Link from "next/link";
+import { ChevronLeft, ChevronRight, History } from "lucide-react";
 
 import { PageHeader } from "@/components/horizon/page-header";
 import { TransactionsTable } from "@/components/horizon/transactions-table";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select } from "@/components/ui/select";
-import { bankAccounts, formatCurrency, recentTransactions } from "@/lib/mock-data";
+import { formatCurrency } from "@/lib/format";
+import { listBanksForUser, listTimelineForUser } from "@/lib/server/banking";
+import { requireServerSession } from "@/lib/session";
+import { cn } from "@/lib/utils";
+import { toAccountView, toTransactionView } from "@/lib/views";
 
-const accountLabelMap = Object.fromEntries(
-  bankAccounts.map((account) => [account.id, `${account.institution} •••• ${account.mask}`])
-);
+const PAGE_SIZE = 10;
 
-export default function TransactionHistoryPage() {
+function historyHref(account: string | undefined, page: number): Route {
+  const params = new URLSearchParams();
+  if (account) params.set("account", account);
+  if (page > 1) params.set("page", String(page));
+  const query = params.toString();
+  return `/transaction-history${query ? `?${query}` : ""}` as Route;
+}
+
+export default async function TransactionHistoryPage({
+  searchParams
+}: {
+  searchParams: { account?: string; page?: string };
+}) {
+  const session = await requireServerSession();
+  const accounts = (await listBanksForUser(session.user.id)).map(toAccountView);
+
+  // Only accept an account filter that belongs to this user.
+  const selected = accounts.find((account) => account.id === searchParams.account);
+  const requestedPage = Number.parseInt(searchParams.page ?? "1", 10);
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+
+  // Fetch one extra row to learn whether a next page exists.
+  const rows = await listTimelineForUser(session.user.id, {
+    bankAccountId: selected?.id,
+    page,
+    pageSize: PAGE_SIZE,
+    lookahead: 1
+  });
+  const hasNext = rows.length > PAGE_SIZE;
+  const transactions = rows.slice(0, PAGE_SIZE).map(toTransactionView);
+
+  const accountLabelMap = Object.fromEntries(
+    accounts.map((account) => [account.id, `${account.institution} •••• ${account.mask}`])
+  );
+
   return (
     <div className="space-y-8">
       <PageHeader
         eyebrow="Transaction History"
-        title="Unified activity feed"
-        description="This view combines synced Plaid account transactions with internal transfer records, matching the PRD requirement for a single timeline."
+        title="All activity"
+        description="Every transaction and transfer across your accounts, newest first."
       />
 
       <section className="grid gap-4 xl:grid-cols-[1fr_2fr]">
         <Card className="border-0 bg-white/80 shadow-sm">
           <CardHeader>
             <CardTitle className="flex items-center gap-3 text-2xl">
-              <History className="size-5 text-[#24556a]" />
-              Account focus
+              <History className="size-5 text-[#24556a]" aria-hidden />
+              Filter by account
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-5">
-            <div className="space-y-2">
-              <p className="text-sm text-slate-500">Select linked account</p>
-              <Select defaultValue={bankAccounts[0].id}>
-                {bankAccounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.institution} • {account.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="rounded-[28px] bg-[#f7f4ef] p-5">
-              <p className="text-sm text-slate-500">Current balance</p>
-              <p className="mt-2 text-3xl font-semibold text-[#091c31]">
-                {formatCurrency(bankAccounts[0].balance)}
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Badge variant="success">Plaid synced</Badge>
-                <Badge variant="outline">Internal transfers merged</Badge>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {bankAccounts.map((account) => (
-                <div
-                  key={account.id}
-                  className="flex items-center justify-between gap-4 rounded-[24px] border border-border/70 bg-white p-4"
-                >
-                  <div>
-                    <p className="font-medium text-[#091c31]">{account.name}</p>
-                    <p className="text-sm text-slate-500">{account.institution}</p>
-                  </div>
-                  <p className="font-medium text-[#091c31]">
-                    {formatCurrency(account.balance)}
-                  </p>
-                </div>
-              ))}
-            </div>
+          <CardContent>
+            <nav aria-label="Filter by account" className="space-y-3">
+              <Link
+                href={historyHref(undefined, 1)}
+                aria-current={!selected ? "page" : undefined}
+                className={cn(
+                  "flex items-center justify-between gap-4 rounded-[24px] border bg-white p-4",
+                  !selected ? "border-[#24556a] ring-1 ring-[#24556a]" : "border-border/70"
+                )}
+              >
+                <p className="font-medium text-[#091c31]">All accounts</p>
+              </Link>
+              {accounts.map((account) => {
+                const active = selected?.id === account.id;
+                return (
+                  <Link
+                    key={account.id}
+                    href={historyHref(account.id, 1)}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "flex items-center justify-between gap-4 rounded-[24px] border bg-white p-4",
+                      active ? "border-[#24556a] ring-1 ring-[#24556a]" : "border-border/70"
+                    )}
+                  >
+                    <div>
+                      <p className="font-medium text-[#091c31]">{account.name}</p>
+                      <p className="text-sm text-slate-500">{account.institution}</p>
+                    </div>
+                    <p className="font-medium text-[#091c31]">{formatCurrency(account.balance)}</p>
+                  </Link>
+                );
+              })}
+            </nav>
           </CardContent>
         </Card>
 
         <Card className="border-0 bg-white/80 shadow-sm">
-          <CardHeader className="flex-row items-center justify-between">
-            <div>
-              <CardTitle className="text-2xl">Full timeline</CardTitle>
-              <p className="mt-2 text-sm text-slate-500">
-                Status, channel, category, and date for each transfer or bank sync entry
-              </p>
-            </div>
-            <Button variant="outline">
-              <Filter className="size-4" />
-              Filters
-            </Button>
+          <CardHeader>
+            <CardTitle className="text-2xl">
+              {selected ? `${selected.name} activity` : "Full timeline"}
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
             <TransactionsTable
-              transactions={recentTransactions}
-              showAccount
+              transactions={transactions}
+              showAccount={!selected}
               accountLabelMap={accountLabelMap}
             />
 
             <div className="flex flex-col gap-3 border-t border-border/60 pt-5 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-slate-500">
-                Showing 8 merged transactions from the latest sync cycle
-              </p>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm">
-                  <ChevronLeft className="size-4" />
-                  Previous
-                </Button>
-                <Button variant="outline" size="sm">
-                  Next
-                  <ChevronRight className="size-4" />
-                </Button>
-              </div>
+              <p className="text-sm text-slate-500">Page {page}</p>
+              <nav aria-label="Pagination" className="flex items-center gap-2">
+                {page > 1 ? (
+                  <Link
+                    href={historyHref(selected?.id, page - 1)}
+                    className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                  >
+                    <ChevronLeft className="size-4" aria-hidden />
+                    Previous
+                  </Link>
+                ) : null}
+                {hasNext ? (
+                  <Link
+                    href={historyHref(selected?.id, page + 1)}
+                    className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                  >
+                    Next
+                    <ChevronRight className="size-4" aria-hidden />
+                  </Link>
+                ) : null}
+              </nav>
             </div>
           </CardContent>
         </Card>

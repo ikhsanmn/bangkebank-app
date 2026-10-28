@@ -1,26 +1,39 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { ensureDatabase } from "@/lib/db/bootstrap";
+import { readJson, invalidJson, unauthorized } from "@/lib/server/http";
 import { getRequestSession } from "@/lib/session";
-import { createTransferForUser, listTransfersForUser } from "@/lib/server/banking";
+import {
+  TransferError,
+  createTransferForUser,
+  listTransfersForUser
+} from "@/lib/server/banking";
 
 export const runtime = "nodejs";
+
+const MAX_TRANSFER_AMOUNT = 1_000_000;
 
 const createTransferSchema = z.object({
   senderBankAccountId: z.string().uuid(),
   recipientEmail: z.string().email(),
-  recipientShareableId: z.string().min(6),
-  amount: z.coerce.number().positive(),
+  recipientShareableId: z.string().min(6).max(64),
+  amount: z.coerce
+    .number()
+    .positive()
+    .max(MAX_TRANSFER_AMOUNT)
+    .refine((value) => /^\d+(\.\d{1,2})?$/.test(String(value)), {
+      message: "Amount can have at most 2 decimal places."
+    }),
   note: z.string().max(280).optional()
 });
 
+const idempotencyKeySchema = z.string().min(8).max(128);
+
 export async function GET(request: Request) {
-  await ensureDatabase();
   const session = await getRequestSession(request);
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return unauthorized();
   }
 
   const transferList = await listTransfersForUser(session.user.id);
@@ -28,14 +41,18 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  await ensureDatabase();
   const session = await getRequestSession(request);
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return unauthorized();
   }
 
-  const parsed = createTransferSchema.safeParse(await request.json());
+  const body = await readJson(request);
+  if (body === undefined) {
+    return invalidJson();
+  }
+
+  const parsed = createTransferSchema.safeParse(body);
 
   if (!parsed.success) {
     return NextResponse.json(
@@ -44,13 +61,27 @@ export async function POST(request: Request) {
     );
   }
 
-  try {
-    const transfer = await createTransferForUser(session.user.id, parsed.data);
-    return NextResponse.json({ transfer }, { status: 201 });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unable to create transfer.";
+  const rawKey = request.headers.get("Idempotency-Key");
+  const key = rawKey === null ? undefined : idempotencyKeySchema.safeParse(rawKey);
+  if (key && !key.success) {
+    return NextResponse.json(
+      { error: "Idempotency-Key must be 8-128 characters." },
+      { status: 400 }
+    );
+  }
 
-    return NextResponse.json({ error: message }, { status: 400 });
+  try {
+    const { transfer, replayed } = await createTransferForUser(session.user.id, {
+      ...parsed.data,
+      idempotencyKey: key?.data
+    });
+    return NextResponse.json({ transfer, replayed }, { status: replayed ? 200 : 201 });
+  } catch (error) {
+    if (error instanceof TransferError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+
+    console.error("[transfers] unexpected failure", error);
+    return NextResponse.json({ error: "Unable to create transfer." }, { status: 500 });
   }
 }
