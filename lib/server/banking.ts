@@ -23,6 +23,20 @@ type Posting =
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// The tenant a user belongs to. Every row written on the user's behalf carries
+// it, and the composite foreign keys reject a row whose tenant disagrees.
+async function tenantOfUser(executor: Pick<typeof db, "select">, userId: string) {
+  const [row] = await executor
+    .select({ tenantId: users.tenantId })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!row) {
+    throw new Error(`Unknown user ${userId}.`);
+  }
+  return row.tenantId;
+}
+
 function buildShareableId() {
   return `BB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
@@ -32,6 +46,7 @@ function buildShareableId() {
 async function postEntry(
   tx: Transaction,
   entry: {
+    tenantId: string;
     kind: (typeof LEDGER_ENTRY_KINDS)[number];
     description: string;
     occurredAt: Date;
@@ -46,6 +61,7 @@ async function postEntry(
   const entryId = crypto.randomUUID();
   await tx.insert(ledgerEntries).values({
     id: entryId,
+    tenantId: entry.tenantId,
     kind: entry.kind,
     description: entry.description,
     occurredAt: entry.occurredAt
@@ -53,6 +69,7 @@ async function postEntry(
   await tx.insert(ledgerPostings).values(
     entry.postings.map((posting) => ({
       id: crypto.randomUUID(),
+      tenantId: entry.tenantId,
       entryId,
       amount: posting.amount,
       bankAccountId: "bankAccountId" in posting ? posting.bankAccountId : null,
@@ -105,9 +122,11 @@ export async function seedUserWorkspace(userId: string) {
       return;
     }
 
+    const tenantId = await tenantOfUser(tx, userId);
     const now = Date.now();
     const accounts = SEED_ACCOUNTS.map((account) => ({
       id: crypto.randomUUID(),
+      tenantId,
       userId,
       institution: "BangkeBank Sandbox",
       name: account.name,
@@ -121,6 +140,7 @@ export async function seedUserWorkspace(userId: string) {
     for (const [index, seed] of SEED_ACCOUNTS.entries()) {
       const occurredAt = new Date(now - SEED_OPENING_DAYS_AGO * DAY_MS);
       const entryId = await postEntry(tx, {
+        tenantId,
         kind: "sandbox_funding",
         description: "Sandbox opening deposit",
         occurredAt,
@@ -131,6 +151,7 @@ export async function seedUserWorkspace(userId: string) {
       });
       await tx.insert(bankTransactions).values({
         id: crypto.randomUUID(),
+        tenantId,
         userId,
         bankAccountId: accounts[index].id,
         entryId,
@@ -150,6 +171,7 @@ export async function seedUserWorkspace(userId: string) {
       const signed = line.direction === "credit" ? line.amount : -line.amount;
       const occurredAt = new Date(now - line.daysAgo * DAY_MS);
       const entryId = await postEntry(tx, {
+        tenantId,
         kind: line.direction === "credit" ? "external_receipt" : "external_payment",
         description: line.name,
         occurredAt,
@@ -160,6 +182,7 @@ export async function seedUserWorkspace(userId: string) {
       });
       await tx.insert(bankTransactions).values({
         id: crypto.randomUUID(),
+        tenantId,
         userId,
         bankAccountId: accountId,
         entryId,
@@ -209,10 +232,12 @@ export async function createBankForUser(
   context: AuditContext = { actorUserId: userId }
 ) {
   return db.transaction(async (tx) => {
+    const tenantId = await tenantOfUser(tx, userId);
     const [bank] = await tx
       .insert(bankAccounts)
       .values({
         id: crypto.randomUUID(),
+        tenantId,
         userId,
         institution: input.institution,
         name: input.name,
@@ -224,7 +249,7 @@ export async function createBankForUser(
       .returning();
 
     await recordAudit(
-      context,
+      { ...context, tenantId },
       { action: "bank_account.created", outcome: "success", entityType: "bankAccount", entityId: bank.id },
       tx
     );
@@ -396,11 +421,17 @@ async function lockAccounts(tx: Transaction, ids: string[], strength: "update" |
     .for(strength);
 }
 
-async function findTransferByIdempotencyKey(senderUserId: string, key: string) {
+async function findTransferByIdempotencyKey(tenantId: string, senderUserId: string, key: string) {
   const [existing] = await db
     .select()
     .from(transfers)
-    .where(and(eq(transfers.senderUserId, senderUserId), eq(transfers.idempotencyKey, key)))
+    .where(
+      and(
+        eq(transfers.tenantId, tenantId),
+        eq(transfers.senderUserId, senderUserId),
+        eq(transfers.idempotencyKey, key)
+      )
+    )
     .limit(1);
 
   return existing ?? null;
@@ -434,9 +465,11 @@ export async function createTransferForUser(
 
   const amount = input.amount;
   const idempotencyKey = input.idempotencyKey ?? null;
+  const tenantId = await tenantOfUser(db, senderUserId);
+  context = { ...context, tenantId };
 
   if (idempotencyKey) {
-    const existing = await findTransferByIdempotencyKey(senderUserId, idempotencyKey);
+    const existing = await findTransferByIdempotencyKey(tenantId, senderUserId, idempotencyKey);
     if (existing) {
       return { transfer: existing, replayed: true };
     }
@@ -447,7 +480,14 @@ export async function createTransferForUser(
       const [receiverBank] = await tx
         .select()
         .from(bankAccounts)
-        .where(eq(bankAccounts.shareableId, input.recipientShareableId))
+        // Scoped to the sender's tenant: another tenant's account is
+        // indistinguishable from one that doesn't exist.
+        .where(
+          and(
+            eq(bankAccounts.tenantId, tenantId),
+            eq(bankAccounts.shareableId, input.recipientShareableId)
+          )
+        )
         .limit(1);
 
       if (!receiverBank) {
@@ -497,6 +537,7 @@ export async function createTransferForUser(
       const transferId = crypto.randomUUID();
       await tx.insert(transfers).values({
         id: transferId,
+        tenantId,
         senderUserId,
         senderBankAccountId: senderBank.id,
         receiverUserId: receiverBank.userId,
@@ -513,6 +554,7 @@ export async function createTransferForUser(
 
       const now = new Date();
       const entryId = await postEntry(tx, {
+        tenantId,
         kind: "transfer",
         description: `Transfer ${transferId}`,
         occurredAt: now,
@@ -525,6 +567,7 @@ export async function createTransferForUser(
       await tx.insert(bankTransactions).values([
         {
           id: crypto.randomUUID(),
+          tenantId,
           userId: senderUserId,
           bankAccountId: senderBank.id,
           entryId,
@@ -539,6 +582,7 @@ export async function createTransferForUser(
         },
         {
           id: crypto.randomUUID(),
+          tenantId,
           userId: receiverBank.userId,
           bankAccountId: receiverBank.id,
           entryId,
@@ -583,14 +627,14 @@ export async function createTransferForUser(
     // Two requests with the same key raced past the pre-check; the unique index
     // let exactly one commit, so hand back that one.
     if (idempotencyKey && isUniqueViolation(error)) {
-      const existing = await findTransferByIdempotencyKey(senderUserId, idempotencyKey);
+      const existing = await findTransferByIdempotencyKey(tenantId, senderUserId, idempotencyKey);
       if (existing) {
         return { transfer: existing, replayed: true };
       }
     }
 
     if (error instanceof InsufficientFunds) {
-      return recordFailedTransfer(senderUserId, input, error.receiver, context);
+      return recordFailedTransfer(tenantId, senderUserId, input, error.receiver, context);
     }
 
     if (error instanceof TransferError) {
@@ -611,6 +655,7 @@ export async function createTransferForUser(
 }
 
 async function recordFailedTransfer(
+  tenantId: string,
   senderUserId: string,
   input: TransferInput,
   receiver: Receiver,
@@ -624,6 +669,7 @@ async function recordFailedTransfer(
         .insert(transfers)
         .values({
           id: crypto.randomUUID(),
+          tenantId,
           senderUserId,
           senderBankAccountId: input.senderBankAccountId,
           receiverUserId: receiver.userId,
@@ -656,7 +702,7 @@ async function recordFailedTransfer(
     return { transfer, replayed: false };
   } catch (error) {
     if (idempotencyKey && isUniqueViolation(error)) {
-      const existing = await findTransferByIdempotencyKey(senderUserId, idempotencyKey);
+      const existing = await findTransferByIdempotencyKey(tenantId, senderUserId, idempotencyKey);
       if (existing) {
         return { transfer: existing, replayed: true };
       }

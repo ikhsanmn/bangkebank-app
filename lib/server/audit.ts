@@ -4,6 +4,8 @@ import { auditEvents } from "@/lib/db/schema";
 type Executor = Pick<typeof db, "insert">;
 
 export type AuditContext = {
+  // Null for platform-level events that belong to no tenant.
+  tenantId?: string | null;
   actorUserId: string | null;
   ipAddress?: string | null;
   userAgent?: string | null;
@@ -40,6 +42,7 @@ export async function recordAudit(
 ) {
   await executor.insert(auditEvents).values({
     id: crypto.randomUUID(),
+    tenantId: context.tenantId ?? null,
     actorUserId: context.actorUserId,
     action: event.action,
     outcome: event.outcome,

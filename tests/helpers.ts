@@ -1,22 +1,28 @@
 import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { bankAccounts, users } from "@/lib/db/schema";
+import { bankAccounts, DEMO_TENANT_ID, tenants, users } from "@/lib/db/schema";
 import { seedUserWorkspace } from "@/lib/server/banking";
 
 // A user with the standard seeded workspace, created directly in the database
 // (sign-up itself goes through better-auth and is covered end to end).
-export async function createSeededUser(label = "user") {
+export async function createSeededUser(label = "user", tenantId = DEMO_TENANT_ID) {
   const id = crypto.randomUUID();
   const email = `${label}-${id.slice(0, 8)}@example.test`;
-  await db.insert(users).values({ id, name: `${label} test`, email });
+  await db.insert(users).values({ id, tenantId, name: `${label} test`, email });
   await seedUserWorkspace(id);
   const accounts = await db
     .select()
     .from(bankAccounts)
     .where(eq(bankAccounts.userId, id))
     .orderBy(bankAccounts.createdAt, bankAccounts.name);
-  return { id, email, accounts };
+  return { id, tenantId, email, accounts };
+}
+
+export async function createTenant(label = "fintech") {
+  const id = `tnt_${crypto.randomUUID().slice(0, 8)}`;
+  await db.insert(tenants).values({ id, slug: `${label}-${id.slice(4)}`, name: `${label} test` });
+  return id;
 }
 
 export async function balanceOf(bankAccountId: string) {

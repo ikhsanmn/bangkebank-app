@@ -15,12 +15,14 @@ describe("database guards", () => {
       const entryId = crypto.randomUUID();
       await tx.insert(ledgerEntries).values({
         id: entryId,
+        tenantId: user.tenantId,
         kind: "sandbox_funding",
         description: "free money",
         occurredAt: new Date()
       });
       await tx.insert(ledgerPostings).values({
         id: crypto.randomUUID(),
+        tenantId: user.tenantId,
         entryId,
         bankAccountId: user.accounts[0].id,
         amount: 1_000_000
@@ -43,6 +45,7 @@ describe("database guards", () => {
       await dbError(
         db.insert(bankAccounts).values({
           id: crypto.randomUUID(),
+          tenantId: user.tenantId,
           userId: user.id,
           institution: "X",
           name: "Minted",
@@ -65,13 +68,14 @@ describe("database guards", () => {
       const entryId = crypto.randomUUID();
       await tx.insert(ledgerEntries).values({
         id: entryId,
+        tenantId: user.tenantId,
         kind: "external_payment",
         description: "too much",
         occurredAt: new Date()
       });
       await tx.insert(ledgerPostings).values([
-        { id: crypto.randomUUID(), entryId, bankAccountId: target.id, amount: -(target.currentBalance + 1) },
-        { id: crypto.randomUUID(), entryId, systemAccount: "EXTERNAL_CLEARING", amount: target.currentBalance + 1 }
+        { id: crypto.randomUUID(), tenantId: user.tenantId, entryId, bankAccountId: target.id, amount: -(target.currentBalance + 1) },
+        { id: crypto.randomUUID(), tenantId: user.tenantId, entryId, systemAccount: "EXTERNAL_CLEARING", amount: target.currentBalance + 1 }
       ]);
     });
 

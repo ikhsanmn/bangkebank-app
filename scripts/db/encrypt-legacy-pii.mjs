@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-// Encrypts identity fields that rows created before Phase 2 stored as plaintext.
-// Idempotent: values already carrying the "v1." prefix are skipped. The format
-// must stay identical to lib/server/pii.ts (a test decrypts this output there).
+// Encrypts identity fields that rows created before Phase 2 stored as plaintext,
+// and fills nikHash for rows created before Phase 3. Idempotent: encrypted
+// values ("v1." prefix) and rows that already have a hash are skipped. Both
+// formats must stay identical to lib/server/pii.ts (tests compare them).
 
 import "dotenv/config";
 
-import { createCipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 import pg from "pg";
@@ -18,6 +19,20 @@ export function encryptValue(plaintext, keyBase64) {
   const cipher = createCipheriv("aes-256-gcm", Buffer.from(keyBase64, "base64"), iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   return ["v1", iv.toString("base64"), cipher.getAuthTag().toString("base64"), ciphertext.toString("base64")].join(".");
+}
+
+export function decryptValue(value, keyBase64) {
+  const [, iv, tag, ciphertext] = value.split(".");
+  const decipher = createDecipheriv("aes-256-gcm", Buffer.from(keyBase64, "base64"), Buffer.from(iv, "base64"));
+  decipher.setAuthTag(Buffer.from(tag, "base64"));
+  return Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64")), decipher.final()]).toString("utf8");
+}
+
+export function hashNikValue(nik, keyBase64) {
+  const hmacKey = Buffer.from(
+    hkdfSync("sha256", Buffer.from(keyBase64, "base64"), Buffer.alloc(0), "bangkebank nik-hash v1", 32)
+  );
+  return createHmac("sha256", hmacKey).update(nik).digest("base64url");
 }
 
 async function main() {
@@ -46,6 +61,17 @@ async function main() {
       }
     }
     console.log(`Encrypted ${updated} legacy identity value(s).`);
+
+    const { rows } = await client.query(
+      `select "id", "nik" from "user" where "nik" like 'v1.%' and "nikHash" = ''`
+    );
+    for (const row of rows) {
+      await client.query(`update "user" set "nikHash" = $1 where "id" = $2`, [
+        hashNikValue(decryptValue(row.nik, key), key),
+        row.id
+      ]);
+    }
+    console.log(`Hashed ${rows.length} NIK(s) for per-tenant uniqueness.`);
   } finally {
     await client.end();
   }

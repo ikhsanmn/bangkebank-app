@@ -1,18 +1,28 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
+import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { accounts, sessions, users, verifications } from "@/lib/db/schema";
+import { accounts, DEMO_TENANT_ID, sessions, users, verifications } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { isPostalCode, isProvince, validateDateOfBirth, validateNik } from "@/lib/kyc";
 import { auditContextFrom, recordAudit } from "@/lib/server/audit";
 import { seedUserWorkspace } from "@/lib/server/banking";
-import { encryptPii } from "@/lib/server/pii";
+import { encryptPii, hashNik } from "@/lib/server/pii";
 
 const ONE_HOUR_SECONDS = 60 * 60;
 
-const KYC_FIELDS = ["nik", "nikLast4", "dateOfBirth", "address1", "province", "postalCode"];
+const KYC_FIELDS = [
+  "nik",
+  "nikLast4",
+  "nikHash",
+  "dateOfBirth",
+  "address1",
+  "province",
+  "postalCode",
+  "tenantId"
+];
 
 function badRequest(message: string): never {
   throw new APIError("BAD_REQUEST", { message });
@@ -43,15 +53,21 @@ function prepareIdentity<T extends Record<string, unknown>>(user: T) {
     ...user,
     nik: encryptPii(nik),
     nikLast4: nik.slice(-4),
+    nikHash: hashNik(nik),
     dateOfBirth: encryptPii(dateOfBirth),
     address1: encryptPii(address)
   };
 }
 
-function auditContext(context: { request?: Request } | null, actorUserId: string) {
-  return context?.request
+function auditContext(
+  context: { request?: Request } | null,
+  actorUserId: string,
+  tenantId: string | null
+) {
+  const base = context?.request
     ? auditContextFrom(context.request, actorUserId)
     : { actorUserId };
+  return { ...base, tenantId };
 }
 
 export const auth = betterAuth({
@@ -110,7 +126,17 @@ export const auth = betterAuth({
       postalCode: { type: "string", required: true },
       dateOfBirth: { type: "string", required: true, returned: false },
       nik: { type: "string", required: true, returned: false },
-      nikLast4: { type: "string", required: false, input: false, defaultValue: "" }
+      nikLast4: { type: "string", required: false, input: false, defaultValue: "" },
+      nikHash: { type: "string", required: false, input: false, returned: false, defaultValue: "" },
+      // Web sign-ups join the demo tenant; partner API customers are created
+      // by their tenant through /api/v1 instead.
+      tenantId: {
+        type: "string",
+        required: false,
+        input: false,
+        returned: false,
+        defaultValue: DEMO_TENANT_ID
+      }
     }
   },
   databaseHooks: {
@@ -119,7 +145,8 @@ export const auth = betterAuth({
         before: async (user) => ({ data: prepareIdentity(user) }),
         after: async (user, context) => {
           await seedUserWorkspace(user.id);
-          await recordAudit(auditContext(context, user.id), {
+          const tenantId = (user as { tenantId?: string }).tenantId ?? DEMO_TENANT_ID;
+          await recordAudit(auditContext(context, user.id, tenantId), {
             action: "user.signed_up",
             outcome: "success",
             entityType: "user",
@@ -141,7 +168,12 @@ export const auth = betterAuth({
     session: {
       create: {
         after: async (session, context) => {
-          await recordAudit(auditContext(context, session.userId), {
+          const [owner] = await db
+            .select({ tenantId: users.tenantId })
+            .from(users)
+            .where(eq(users.id, session.userId))
+            .limit(1);
+          await recordAudit(auditContext(context, session.userId, owner?.tenantId ?? null), {
             action: "session.created",
             outcome: "success",
             entityType: "session",

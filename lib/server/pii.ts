@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from "node:crypto";
 
 import { env } from "@/lib/env";
 
@@ -11,6 +11,16 @@ const IV_BYTES = 12;
 
 function key() {
   return Buffer.from(env.PII_ENCRYPTION_KEY, "base64");
+}
+
+// A deterministic, keyed fingerprint of a NIK for uniqueness checks. The HMAC
+// key is derived from the PII key, so a database dump alone can't brute-force
+// the 16-digit space. scripts/db/encrypt-legacy-pii.mjs must derive it the same way.
+const NIK_HASH_INFO = "bangkebank nik-hash v1";
+
+export function hashNik(nik: string) {
+  const hmacKey = Buffer.from(hkdfSync("sha256", key(), Buffer.alloc(0), NIK_HASH_INFO, 32));
+  return createHmac("sha256", hmacKey).update(nik).digest("base64url");
 }
 
 export function encryptPii(plaintext: string) {
