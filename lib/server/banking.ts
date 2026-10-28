@@ -1,151 +1,179 @@
 import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { bankAccounts, bankTransactions, transfers, users } from "@/lib/db/schema";
+import {
+  bankAccounts,
+  bankTransactions,
+  ledgerEntries,
+  ledgerPostings,
+  transfers,
+  users,
+  type LEDGER_ENTRY_KINDS,
+  type SystemAccount
+} from "@/lib/db/schema";
+import { type AuditContext, recordAudit } from "@/lib/server/audit";
 
-function money(value: number) {
-  return Number(value.toFixed(2));
-}
+// All amounts are whole rupiah (IDR has no minor unit in everyday use).
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+type Posting =
+  | { bankAccountId: string; amount: number }
+  | { systemAccount: SystemAccount; amount: number };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function buildShareableId() {
   return `BB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
-export async function seedUserWorkspace(userId: string) {
-  const existing = await db
-    .select({ id: bankAccounts.id })
-    .from(bankAccounts)
-    .where(eq(bankAccounts.userId, userId))
-    .limit(1);
-
-  if (existing.length > 0) {
-    return;
+// Writes one balanced journal entry. The database applies each posting to its
+// account balance and rejects the commit if the postings don't sum to zero.
+async function postEntry(
+  tx: Transaction,
+  entry: {
+    kind: (typeof LEDGER_ENTRY_KINDS)[number];
+    description: string;
+    occurredAt: Date;
+    postings: Posting[];
+  }
+) {
+  const total = entry.postings.reduce((sum, posting) => sum + posting.amount, 0);
+  if (entry.postings.length < 2 || total !== 0) {
+    throw new Error(`Unbalanced ledger entry "${entry.description}" (sum ${total}).`);
   }
 
-  const now = new Date();
-  const seededAccounts = [
-    {
+  const entryId = crypto.randomUUID();
+  await tx.insert(ledgerEntries).values({
+    id: entryId,
+    kind: entry.kind,
+    description: entry.description,
+    occurredAt: entry.occurredAt
+  });
+  await tx.insert(ledgerPostings).values(
+    entry.postings.map((posting) => ({
       id: crypto.randomUUID(),
-      userId,
-      institution: "Chase",
-      name: "Primary Checking",
-      subtype: "Checking",
-      mask: "1842",
-      shareableId: buildShareableId(),
-      currentBalance: 12640.42,
-      availableBalance: 12100.42,
-      routingHint: "Funding source active"
-    },
-    {
-      id: crypto.randomUUID(),
-      userId,
-      institution: "Capital One",
-      name: "Rainy Day Reserve",
-      subtype: "Savings",
-      mask: "7721",
-      shareableId: buildShareableId(),
-      currentBalance: 28450.9,
-      availableBalance: 28450.9,
-      routingHint: "High-yield reserve"
-    },
-    {
-      id: crypto.randomUUID(),
-      userId,
-      institution: "American Express",
-      name: "Operations Wallet",
-      subtype: "Checking",
-      mask: "4209",
-      shareableId: buildShareableId(),
-      currentBalance: 4930.13,
-      availableBalance: 4625.13,
-      routingHint: "ACH transfers enabled"
+      entryId,
+      amount: posting.amount,
+      bankAccountId: "bankAccountId" in posting ? posting.bankAccountId : null,
+      systemAccount: "systemAccount" in posting ? posting.systemAccount : null
+    }))
+  );
+  return entryId;
+}
+
+type SeedLine = {
+  daysAgo: number;
+  account: number;
+  name: string;
+  amount: number;
+  direction: "credit" | "debit";
+  channel: string;
+  category: string;
+};
+
+const SEED_ACCOUNTS = [
+  { name: "Main Account", subtype: "Savings", mask: "1842", opening: 18_500_000 },
+  { name: "Emergency Fund", subtype: "Savings", mask: "7721", opening: 45_000_000 },
+  { name: "Business Wallet", subtype: "Current", mask: "4209", opening: 7_250_000 }
+];
+
+const SEED_OPENING_DAYS_AGO = 30;
+
+const SEED_LINES: SeedLine[] = [
+  { daysAgo: 1, account: 0, name: "Indomaret", amount: 87_500, direction: "debit", channel: "QRIS", category: "Groceries" },
+  { daysAgo: 2, account: 2, name: "Payout from PT Contoh Digital", amount: 15_000_000, direction: "credit", channel: "BI-FAST", category: "Income" },
+  { daysAgo: 3, account: 0, name: "PLN prepaid electricity", amount: 200_000, direction: "debit", channel: "Virtual account", category: "Utilities" },
+  { daysAgo: 4, account: 2, name: "Monthly kos rent", amount: 2_500_000, direction: "debit", channel: "BI-FAST", category: "Housing" },
+  { daysAgo: 5, account: 0, name: "Gojek", amount: 45_000, direction: "debit", channel: "QRIS", category: "Transport" },
+  { daysAgo: 6, account: 0, name: "Tokopedia", amount: 349_000, direction: "debit", channel: "Virtual account", category: "Shopping" },
+  { daysAgo: 8, account: 1, name: "Savings interest", amount: 37_500, direction: "credit", channel: "Book transfer", category: "Interest" }
+];
+
+// Opens three sandbox accounts funded from SANDBOX_FUNDING, then replays a
+// week of card and transfer activity against EXTERNAL_CLEARING. Every
+// statement line comes from a ledger entry, so balances reconcile exactly.
+export async function seedUserWorkspace(userId: string) {
+  await db.transaction(async (tx) => {
+    const existing = await tx
+      .select({ id: bankAccounts.id })
+      .from(bankAccounts)
+      .where(eq(bankAccounts.userId, userId))
+      .limit(1);
+
+    if (existing.length > 0) {
+      return;
     }
-  ];
 
-  await db.insert(bankAccounts).values(seededAccounts);
+    const now = Date.now();
+    const accounts = SEED_ACCOUNTS.map((account) => ({
+      id: crypto.randomUUID(),
+      userId,
+      institution: "BangkeBank Sandbox",
+      name: account.name,
+      subtype: account.subtype,
+      mask: account.mask,
+      shareableId: buildShareableId(),
+      routingHint: "Sandbox account"
+    }));
+    await tx.insert(bankAccounts).values(accounts);
 
-  const seededTransactions = [
-    {
-      id: crypto.randomUUID(),
-      userId,
-      bankAccountId: seededAccounts[0].id,
-      name: "Whole Foods Market",
-      amount: 82.45,
-      direction: "debit",
-      status: "Completed",
-      channel: "In store",
-      category: "Groceries",
-      source: "Sandbox seed",
-      occurredAt: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000)
-    },
-    {
-      id: crypto.randomUUID(),
-      userId,
-      bankAccountId: seededAccounts[2].id,
-      name: "Stripe Client Payout",
-      amount: 3200,
-      direction: "credit",
-      status: "Completed",
-      channel: "Bank deposit",
-      category: "Income",
-      source: "Sandbox seed",
-      occurredAt: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000)
-    },
-    {
-      id: crypto.randomUUID(),
-      userId,
-      bankAccountId: seededAccounts[0].id,
-      name: "Figma",
-      amount: 19,
-      direction: "debit",
-      status: "Completed",
-      channel: "Card subscription",
-      category: "Software",
-      source: "Sandbox seed",
-      occurredAt: new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000)
-    },
-    {
-      id: crypto.randomUUID(),
-      userId,
-      bankAccountId: seededAccounts[2].id,
-      name: "Rent Payment",
-      amount: 1850,
-      direction: "debit",
-      status: "Completed",
-      channel: "ACH",
-      category: "Housing",
-      source: "Sandbox seed",
-      occurredAt: new Date(now.getTime() - 4 * 24 * 60 * 60 * 1000)
-    },
-    {
-      id: crypto.randomUUID(),
-      userId,
-      bankAccountId: seededAccounts[0].id,
-      name: "United Airlines",
-      amount: 428.3,
-      direction: "debit",
-      status: "Completed",
-      channel: "Online",
-      category: "Travel",
-      source: "Sandbox seed",
-      occurredAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-    },
-    {
-      id: crypto.randomUUID(),
-      userId,
-      bankAccountId: seededAccounts[1].id,
-      name: "Interest payment",
-      amount: 43.12,
-      direction: "credit",
-      status: "Completed",
-      channel: "Bank deposit",
-      category: "Interest",
-      source: "Sandbox seed",
-      occurredAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000)
+    for (const [index, seed] of SEED_ACCOUNTS.entries()) {
+      const occurredAt = new Date(now - SEED_OPENING_DAYS_AGO * DAY_MS);
+      const entryId = await postEntry(tx, {
+        kind: "sandbox_funding",
+        description: "Sandbox opening deposit",
+        occurredAt,
+        postings: [
+          { bankAccountId: accounts[index].id, amount: seed.opening },
+          { systemAccount: "SANDBOX_FUNDING", amount: -seed.opening }
+        ]
+      });
+      await tx.insert(bankTransactions).values({
+        id: crypto.randomUUID(),
+        userId,
+        bankAccountId: accounts[index].id,
+        entryId,
+        name: "Sandbox opening deposit",
+        amount: seed.opening,
+        direction: "credit",
+        status: "Completed",
+        channel: "Book transfer",
+        category: "Deposit",
+        source: "Sandbox seed",
+        occurredAt
+      });
     }
-  ];
 
-  await db.insert(bankTransactions).values(seededTransactions);
+    for (const line of SEED_LINES) {
+      const accountId = accounts[line.account].id;
+      const signed = line.direction === "credit" ? line.amount : -line.amount;
+      const occurredAt = new Date(now - line.daysAgo * DAY_MS);
+      const entryId = await postEntry(tx, {
+        kind: line.direction === "credit" ? "external_receipt" : "external_payment",
+        description: line.name,
+        occurredAt,
+        postings: [
+          { bankAccountId: accountId, amount: signed },
+          { systemAccount: "EXTERNAL_CLEARING", amount: -signed }
+        ]
+      });
+      await tx.insert(bankTransactions).values({
+        id: crypto.randomUUID(),
+        userId,
+        bankAccountId: accountId,
+        entryId,
+        name: line.name,
+        amount: line.amount,
+        direction: line.direction,
+        status: "Completed",
+        channel: line.channel,
+        category: line.category,
+        source: "Sandbox seed",
+        occurredAt
+      });
+    }
+  });
 }
 
 export async function listBanksForUser(userId: string) {
@@ -153,7 +181,8 @@ export async function listBanksForUser(userId: string) {
     .select()
     .from(bankAccounts)
     .where(eq(bankAccounts.userId, userId))
-    .orderBy(bankAccounts.createdAt);
+    // Seeded accounts share a timestamp; the name keeps their order stable.
+    .orderBy(bankAccounts.createdAt, bankAccounts.name, bankAccounts.id);
 }
 
 export async function getBankForUser(userId: string, bankAccountId: string) {
@@ -166,8 +195,8 @@ export async function getBankForUser(userId: string, bankAccountId: string) {
   return bank ?? null;
 }
 
-// New accounts always open empty. Balances only change through transfers, so a
-// client can never declare money into existence.
+// New accounts always open empty; the database refuses any other opening
+// balance. Money only arrives through ledger entries.
 export async function createBankForUser(
   userId: string,
   input: {
@@ -176,25 +205,31 @@ export async function createBankForUser(
     subtype: string;
     mask: string;
     routingHint?: string;
-  }
+  },
+  context: AuditContext = { actorUserId: userId }
 ) {
-  const [bank] = await db
-    .insert(bankAccounts)
-    .values({
-      id: crypto.randomUUID(),
-      userId,
-      institution: input.institution,
-      name: input.name,
-      subtype: input.subtype,
-      mask: input.mask,
-      shareableId: buildShareableId(),
-      currentBalance: 0,
-      availableBalance: 0,
-      routingHint: input.routingHint ?? "Sandbox account"
-    })
-    .returning();
+  return db.transaction(async (tx) => {
+    const [bank] = await tx
+      .insert(bankAccounts)
+      .values({
+        id: crypto.randomUUID(),
+        userId,
+        institution: input.institution,
+        name: input.name,
+        subtype: input.subtype,
+        mask: input.mask,
+        shareableId: buildShareableId(),
+        routingHint: input.routingHint ?? "Sandbox account"
+      })
+      .returning();
 
-  return bank;
+    await recordAudit(
+      context,
+      { action: "bank_account.created", outcome: "success", entityType: "bankAccount", entityId: bank.id },
+      tx
+    );
+    return bank;
+  });
 }
 
 const MAX_PAGE_SIZE = 100;
@@ -228,28 +263,33 @@ export async function listTimelineForUser(
     .offset(offset);
 }
 
+// Senders see all their attempts, including failed ones; recipients only see
+// money that actually arrived.
 export async function listTransfersForUser(userId: string) {
   return db
     .select()
     .from(transfers)
-    .where(or(eq(transfers.senderUserId, userId), eq(transfers.receiverUserId, userId)))
+    .where(
+      or(
+        eq(transfers.senderUserId, userId),
+        and(eq(transfers.receiverUserId, userId), eq(transfers.status, "settled"))
+      )
+    )
     .orderBy(desc(transfers.createdAt));
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const CATEGORY_WINDOW_DAYS = 30;
 const FLOW_WINDOW_DAYS = 7;
+// Asia/Jakarta (WIB) is UTC+7 all year; there is no daylight saving.
+const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
 
 export async function getDashboardData(userId: string) {
   const accountsForUser = await listBanksForUser(userId);
   const recent = await listTimelineForUser(userId, { pageSize: 8 });
 
-  const totalBalance = accountsForUser.reduce(
-    (sum, account) => sum + Number(account.currentBalance),
-    0
-  );
+  const totalBalance = accountsForUser.reduce((sum, account) => sum + account.currentBalance, 0);
   const totalAvailable = accountsForUser.reduce(
-    (sum, account) => sum + Number(account.availableBalance),
+    (sum, account) => sum + account.availableBalance,
     0
   );
 
@@ -272,17 +312,18 @@ export async function getDashboardData(userId: string) {
 
   const categoryBreakdown = categoryRows.map((row) => ({
     label: row.label,
-    value: money(Number(row.value))
+    value: Number(row.value)
   }));
 
-  // Net money in minus money out per calendar day (UTC) for the last week.
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  const flowStart = new Date(today.getTime() - (FLOW_WINDOW_DAYS - 1) * DAY_MS);
+  // Net money in minus money out per Jakarta calendar day for the last week.
+  const jakartaToday = new Date(Date.now() + JAKARTA_OFFSET_MS);
+  jakartaToday.setUTCHours(0, 0, 0, 0);
+  const firstDay = new Date(jakartaToday.getTime() - (FLOW_WINDOW_DAYS - 1) * DAY_MS);
+  const flowStart = new Date(firstDay.getTime() - JAKARTA_OFFSET_MS);
 
   const flowRows = await db
     .select({
-      day: sql<string>`to_char(date_trunc('day', ${bankTransactions.occurredAt} at time zone 'UTC'), 'YYYY-MM-DD')`,
+      day: sql<string>`to_char(${bankTransactions.occurredAt} at time zone 'Asia/Jakarta', 'YYYY-MM-DD')`,
       net: sql<string>`sum(case when ${bankTransactions.direction} = 'credit' then ${bankTransactions.amount} else -${bankTransactions.amount} end)`
     })
     .from(bankTransactions)
@@ -291,18 +332,18 @@ export async function getDashboardData(userId: string) {
 
   const netByDay = new Map(flowRows.map((row) => [row.day, Number(row.net)]));
   const dailyNetFlow = Array.from({ length: FLOW_WINDOW_DAYS }, (_, index) => {
-    const date = new Date(flowStart.getTime() + index * DAY_MS);
+    const date = new Date(firstDay.getTime() + index * DAY_MS);
     const key = date.toISOString().slice(0, 10);
     return {
-      label: date.toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" }),
-      value: money(netByDay.get(key) ?? 0)
+      label: date.toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" }),
+      value: netByDay.get(key) ?? 0
     };
   });
 
   return {
     totals: {
-      totalBalance: money(totalBalance),
-      totalAvailable: money(totalAvailable),
+      totalBalance,
+      totalAvailable,
       linkedBanks: accountsForUser.length
     },
     accounts: accountsForUser,
@@ -322,6 +363,16 @@ export class TransferError extends Error {
   }
 }
 
+const INSUFFICIENT_FUNDS = "Insufficient available balance for this transfer.";
+
+type Receiver = { userId: string; bankAccountId: string; name: string; email: string };
+
+class InsufficientFunds extends Error {
+  constructor(readonly receiver: Receiver) {
+    super(INSUFFICIENT_FUNDS);
+  }
+}
+
 const UNIQUE_VIOLATION = "23505";
 
 // Drizzle wraps driver errors, so the Postgres code may sit on `cause`.
@@ -331,6 +382,18 @@ function isUniqueViolation(error: unknown): boolean {
   }
   const { code, cause } = error as { code?: string; cause?: unknown };
   return code === UNIQUE_VIOLATION || isUniqueViolation(cause);
+}
+
+// Every transaction that touches two accounts takes its row locks in id order,
+// including the KEY SHARE locks that foreign-key checks would otherwise take in
+// constraint order. One global order means concurrent transfers can't deadlock.
+async function lockAccounts(tx: Transaction, ids: string[], strength: "update" | "key share") {
+  return tx
+    .select()
+    .from(bankAccounts)
+    .where(inArray(bankAccounts.id, ids))
+    .orderBy(asc(bankAccounts.id))
+    .for(strength);
 }
 
 async function findTransferByIdempotencyKey(senderUserId: string, key: string) {
@@ -343,23 +406,33 @@ async function findTransferByIdempotencyKey(senderUserId: string, key: string) {
   return existing ?? null;
 }
 
-// Moves money between two accounts in one transaction. Both rows are locked in
-// id order (so concurrent transfers can't deadlock), the debit is a conditional
-// UPDATE that only succeeds while funds suffice, and all arithmetic happens in
-// Postgres numeric rather than JS floats. A repeated Idempotency-Key returns the
-// original transfer instead of moving money twice.
+export type TransferInput = {
+  senderBankAccountId: string;
+  recipientEmail: string;
+  recipientShareableId: string;
+  amount: number;
+  note?: string;
+  idempotencyKey?: string;
+};
+
+// Moves money between two accounts as one balanced ledger entry.
+//
+// The transfer row starts `pending` and becomes `settled` in the same database
+// transaction as its ledger entry, so no one ever observes a half-applied
+// transfer. Both account rows are locked (see lockAccounts) before the
+// balance check. An attempt that fails for lack of
+// funds is kept as a `failed` transfer so the sender's history and the audit
+// trail show it. A repeated Idempotency-Key returns the original outcome.
 export async function createTransferForUser(
   senderUserId: string,
-  input: {
-    senderBankAccountId: string;
-    recipientEmail: string;
-    recipientShareableId: string;
-    amount: number;
-    note?: string;
-    idempotencyKey?: string;
-  }
+  input: TransferInput,
+  context: AuditContext = { actorUserId: senderUserId }
 ) {
-  const amount = money(input.amount);
+  if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
+    throw new TransferError("Amount must be a positive whole number of rupiah.", 422);
+  }
+
+  const amount = input.amount;
   const idempotencyKey = input.idempotencyKey ?? null;
 
   if (idempotencyKey) {
@@ -401,12 +474,7 @@ export async function createTransferForUser(
         );
       }
 
-      const locked = await tx
-        .select()
-        .from(bankAccounts)
-        .where(inArray(bankAccounts.id, [input.senderBankAccountId, receiverBank.id]))
-        .orderBy(asc(bankAccounts.id))
-        .for("update");
+      const locked = await lockAccounts(tx, [input.senderBankAccountId, receiverBank.id], "update");
 
       const senderBank = locked.find(
         (row) => row.id === input.senderBankAccountId && row.userId === senderUserId
@@ -416,57 +484,50 @@ export async function createTransferForUser(
         throw new TransferError("Sender bank account not found.", 404);
       }
 
-      const now = new Date();
-      const [debited] = await tx
-        .update(bankAccounts)
-        .set({
-          currentBalance: sql`${bankAccounts.currentBalance} - ${amount}`,
-          availableBalance: sql`${bankAccounts.availableBalance} - ${amount}`,
-          updatedAt: now
-        })
-        .where(
-          and(eq(bankAccounts.id, senderBank.id), gte(bankAccounts.availableBalance, amount))
-        )
-        .returning({ id: bankAccounts.id });
-
-      if (!debited) {
-        throw new TransferError("Insufficient available balance for this transfer.", 422);
+      // The row lock makes this read authoritative until commit.
+      if (senderBank.availableBalance < amount) {
+        throw new InsufficientFunds({
+          userId: receiverBank.userId,
+          bankAccountId: receiverBank.id,
+          name: receiverUser.name,
+          email: receiverUser.email
+        });
       }
 
-      await tx
-        .update(bankAccounts)
-        .set({
-          currentBalance: sql`${bankAccounts.currentBalance} + ${amount}`,
-          availableBalance: sql`${bankAccounts.availableBalance} + ${amount}`,
-          updatedAt: now
-        })
-        .where(eq(bankAccounts.id, receiverBank.id));
+      const transferId = crypto.randomUUID();
+      await tx.insert(transfers).values({
+        id: transferId,
+        senderUserId,
+        senderBankAccountId: senderBank.id,
+        receiverUserId: receiverBank.userId,
+        receiverBankAccountId: receiverBank.id,
+        recipientName: receiverUser.name,
+        recipientEmail: receiverUser.email,
+        recipientShareableId: input.recipientShareableId,
+        amount,
+        note: input.note ?? "",
+        status: "pending",
+        channel: "Sandbox transfer",
+        idempotencyKey
+      });
 
-      const [created] = await tx
-        .insert(transfers)
-        .values({
-          id: crypto.randomUUID(),
-          senderUserId,
-          senderBankAccountId: senderBank.id,
-          receiverUserId: receiverBank.userId,
-          receiverBankAccountId: receiverBank.id,
-          recipientName: receiverUser.name,
-          recipientEmail: receiverUser.email,
-          recipientShareableId: input.recipientShareableId,
-          amount,
-          note: input.note ?? "",
-          status: "Completed",
-          channel: "Sandbox transfer",
-          idempotencyKey,
-          completedAt: now
-        })
-        .returning();
+      const now = new Date();
+      const entryId = await postEntry(tx, {
+        kind: "transfer",
+        description: `Transfer ${transferId}`,
+        occurredAt: now,
+        postings: [
+          { bankAccountId: senderBank.id, amount: -amount },
+          { bankAccountId: receiverBank.id, amount }
+        ]
+      });
 
       await tx.insert(bankTransactions).values([
         {
           id: crypto.randomUUID(),
           userId: senderUserId,
           bankAccountId: senderBank.id,
+          entryId,
           name: `Transfer to ${receiverUser.name}`,
           amount,
           direction: "debit",
@@ -480,6 +541,7 @@ export async function createTransferForUser(
           id: crypto.randomUUID(),
           userId: receiverBank.userId,
           bankAccountId: receiverBank.id,
+          entryId,
           name: `Transfer from ${senderBank.name}`,
           amount,
           direction: "credit",
@@ -491,7 +553,29 @@ export async function createTransferForUser(
         }
       ]);
 
-      return created;
+      const [settled] = await tx
+        .update(transfers)
+        .set({ status: "settled", entryId, completedAt: now })
+        .where(eq(transfers.id, transferId))
+        .returning();
+
+      await recordAudit(
+        context,
+        {
+          action: "transfer.settled",
+          outcome: "success",
+          entityType: "transfer",
+          entityId: transferId,
+          metadata: {
+            amount,
+            senderBankAccountId: senderBank.id,
+            receiverBankAccountId: receiverBank.id
+          }
+        },
+        tx
+      );
+
+      return settled;
     });
 
     return { transfer, replayed: false };
@@ -504,8 +588,95 @@ export async function createTransferForUser(
         return { transfer: existing, replayed: true };
       }
     }
+
+    if (error instanceof InsufficientFunds) {
+      return recordFailedTransfer(senderUserId, input, error.receiver, context);
+    }
+
+    if (error instanceof TransferError) {
+      await recordAudit(context, {
+        action: "transfer.rejected",
+        outcome: "failure",
+        entityType: "bankAccount",
+        entityId: input.senderBankAccountId,
+        metadata: {
+          amount,
+          reason: error.message,
+          recipientShareableId: input.recipientShareableId
+        }
+      });
+    }
     throw error;
   }
+}
+
+async function recordFailedTransfer(
+  senderUserId: string,
+  input: TransferInput,
+  receiver: Receiver,
+  context: AuditContext
+) {
+  const idempotencyKey = input.idempotencyKey ?? null;
+  try {
+    const transfer = await db.transaction(async (tx) => {
+      await lockAccounts(tx, [input.senderBankAccountId, receiver.bankAccountId], "key share");
+      const [failed] = await tx
+        .insert(transfers)
+        .values({
+          id: crypto.randomUUID(),
+          senderUserId,
+          senderBankAccountId: input.senderBankAccountId,
+          receiverUserId: receiver.userId,
+          receiverBankAccountId: receiver.bankAccountId,
+          recipientName: receiver.name,
+          recipientEmail: receiver.email,
+          recipientShareableId: input.recipientShareableId,
+          amount: input.amount,
+          note: input.note ?? "",
+          status: "failed",
+          failureReason: INSUFFICIENT_FUNDS,
+          channel: "Sandbox transfer",
+          idempotencyKey
+        })
+        .returning();
+
+      await recordAudit(
+        context,
+        {
+          action: "transfer.failed",
+          outcome: "failure",
+          entityType: "transfer",
+          entityId: failed.id,
+          metadata: { amount: input.amount, reason: INSUFFICIENT_FUNDS }
+        },
+        tx
+      );
+      return failed;
+    });
+    return { transfer, replayed: false };
+  } catch (error) {
+    if (idempotencyKey && isUniqueViolation(error)) {
+      const existing = await findTransferByIdempotencyKey(senderUserId, idempotencyKey);
+      if (existing) {
+        return { transfer: existing, replayed: true };
+      }
+    }
+    throw error;
+  }
+}
+
+// Balances that disagree with the sum of their postings. Always empty unless
+// the ledger guards were bypassed; exposed for tests and operators.
+export async function findUnreconciledAccounts() {
+  const result = await db.execute<{ id: string; balance: string; posted: string }>(sql`
+    select a."id", a."currentBalance" as balance, coalesce(sum(p."amount"), 0) as posted
+      from "bankAccount" a
+      left join "ledgerPosting" p on p."bankAccountId" = a."id"
+     group by a."id"
+    having a."currentBalance" <> coalesce(sum(p."amount"), 0)
+        or a."availableBalance" <> coalesce(sum(p."amount"), 0)
+  `);
+  return result.rows;
 }
 
 export async function getUserProfile(userId: string) {
@@ -517,8 +688,9 @@ export async function getUserProfile(userId: string) {
       firstName: users.firstName,
       lastName: users.lastName,
       city: users.city,
-      state: users.state,
-      postalCode: users.postalCode
+      province: users.province,
+      postalCode: users.postalCode,
+      nikLast4: users.nikLast4
     })
     .from(users)
     .where(eq(users.id, userId))

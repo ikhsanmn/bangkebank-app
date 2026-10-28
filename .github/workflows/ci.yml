@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bangkebank
+          POSTGRES_PASSWORD: bangkebank
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bangkebank"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://bangkebank:bangkebank@localhost:5432/bangkebank_test
+      # CI-only values: `next build` and drizzle-kit read these.
+      DATABASE_URL: postgres://bangkebank:bangkebank@localhost:5432/bangkebank_ci
+      BETTER_AUTH_SECRET: ci-only-secret-0123456789abcdefghijklmnop
+      BETTER_AUTH_URL: http://localhost:3000
+      PII_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Schema matches committed migrations
+        run: |
+          npx drizzle-kit generate
+          test -z "$(git status --porcelain drizzle)" || { git status drizzle; exit 1; }
+      - name: Migrations apply to an empty database
+        run: |
+          PGPASSWORD=bangkebank createdb -h localhost -U bangkebank bangkebank_ci
+          npx drizzle-kit migrate
+      - run: npm test
+      - run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --target runner -t bangkebank:ci .
+      - run: docker build --target migrate -t bangkebank-migrate:ci .

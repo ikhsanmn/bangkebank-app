@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { MAX_TRANSFER_RUPIAH } from "@/lib/format";
+import { auditContextFrom } from "@/lib/server/audit";
 import { readJson, invalidJson, unauthorized } from "@/lib/server/http";
 import { getRequestSession } from "@/lib/session";
 import {
@@ -11,19 +13,12 @@ import {
 
 export const runtime = "nodejs";
 
-const MAX_TRANSFER_AMOUNT = 1_000_000;
-
 const createTransferSchema = z.object({
   senderBankAccountId: z.string().uuid(),
   recipientEmail: z.string().email(),
   recipientShareableId: z.string().min(6).max(64),
-  amount: z.coerce
-    .number()
-    .positive()
-    .max(MAX_TRANSFER_AMOUNT)
-    .refine((value) => /^\d+(\.\d{1,2})?$/.test(String(value)), {
-      message: "Amount can have at most 2 decimal places."
-    }),
+  // Whole rupiah only; strings are rejected so "1.500" can't be misread.
+  amount: z.number().int().positive().max(MAX_TRANSFER_RUPIAH),
   note: z.string().max(280).optional()
 });
 
@@ -71,10 +66,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { transfer, replayed } = await createTransferForUser(session.user.id, {
-      ...parsed.data,
-      idempotencyKey: key?.data
-    });
+    const { transfer, replayed } = await createTransferForUser(
+      session.user.id,
+      { ...parsed.data, idempotencyKey: key?.data },
+      auditContextFrom(request, session.user.id)
+    );
+    if (transfer.status === "failed") {
+      return NextResponse.json(
+        { error: transfer.failureReason, transfer, replayed },
+        { status: 422 }
+      );
+    }
     return NextResponse.json({ transfer, replayed }, { status: replayed ? 200 : 201 });
   } catch (error) {
     if (error instanceof TransferError) {

@@ -15,6 +15,20 @@
       "when": 1793173432282,
       "tag": "0001_phase1_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793186770161,
+      "tag": "0002_phase2_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793186866771,
+      "tag": "0003_ledger_guards",
+      "breakpoints": true
     }
   ]
 }

@@ -24,11 +24,27 @@ function requireAuthSecret() {
   return value;
 }
 
+const PII_KEY_BYTES = 32;
+
+function requirePiiKey() {
+  const value = requireEnv("PII_ENCRYPTION_KEY");
+
+  if (Buffer.from(value, "base64").length !== PII_KEY_BYTES) {
+    throw new Error(
+      `PII_ENCRYPTION_KEY must be ${PII_KEY_BYTES} random bytes, base64-encoded ` +
+        "(generate one with: openssl rand -base64 32)."
+    );
+  }
+
+  return value;
+}
+
 export const env = {
   DATABASE_URL: requireEnv("DATABASE_URL"),
   // "true" turns on TLS with certificate verification for the database connection.
   DATABASE_SSL: process.env.DATABASE_SSL === "true",
   BETTER_AUTH_SECRET: requireAuthSecret(),
   BETTER_AUTH_URL: requireEnv("BETTER_AUTH_URL"),
+  PII_ENCRYPTION_KEY: requirePiiKey(),
   NODE_ENV: process.env.NODE_ENV ?? "development"
 };

@@ -6,7 +6,8 @@ import { getUserProfile } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
 
-// Returns an explicit field list; identity data (DOB, address, SSN digits) stays server-side.
+// Returns an explicit field list; identity data (NIK, DOB, address) stays server-side
+// apart from the last four NIK digits.
 export async function GET(request: Request) {
   const session = await getRequestSession(request);
 

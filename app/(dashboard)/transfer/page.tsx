@@ -10,6 +10,12 @@ import { requireServerSession } from "@/lib/session";
 
 const RECENT_TRANSFER_COUNT = 5;
 
+const STATUS_BADGES = {
+  settled: { label: "Settled", variant: "success" },
+  pending: { label: "Pending", variant: "warning" },
+  failed: { label: "Failed", variant: "outline" }
+} as const;
+
 export default async function TransferPage() {
   const session = await requireServerSession();
   const [banks, transferList] = await Promise.all([
@@ -47,6 +53,7 @@ export default async function TransferPage() {
               ) : null}
               {recent.map((transfer) => {
                 const outgoing = transfer.senderUserId === session.user.id;
+                const status = transfer.status as keyof typeof STATUS_BADGES;
                 return (
                   <div
                     key={transfer.id}
@@ -59,11 +66,24 @@ export default async function TransferPage() {
                       <p className="mt-1 text-sm text-slate-500">{formatDate(transfer.createdAt)}</p>
                     </div>
                     <div className="text-right">
-                      <p className={outgoing ? "font-medium text-[#091c31]" : "font-medium text-emerald-700"}>
+                      <p
+                        className={
+                          status === "failed"
+                            ? "font-medium text-slate-400 line-through"
+                            : outgoing
+                              ? "font-medium text-[#091c31]"
+                              : "font-medium text-emerald-700"
+                        }
+                      >
                         {outgoing ? "-" : "+"}
                         {formatCurrency(Number(transfer.amount))}
                       </p>
-                      <Badge variant="success">{transfer.status}</Badge>
+                      <Badge variant={STATUS_BADGES[status].variant}>
+                        {STATUS_BADGES[status].label}
+                      </Badge>
+                      {transfer.failureReason ? (
+                        <p className="mt-1 text-xs text-rose-700">{transfer.failureReason}</p>
+                      ) : null}
                     </div>
                   </div>
                 );

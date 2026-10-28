@@ -73,7 +73,7 @@ export default async function DashboardPage() {
                 Money in minus money out, last 7 days (UTC)
               </p>
             </div>
-            <Badge variant="outline">USD</Badge>
+            <Badge variant="outline">IDR</Badge>
           </CardHeader>
           <CardContent>
             <div className="flex items-end gap-3 rounded-[28px] bg-[#f7f4ef] p-6">

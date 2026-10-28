@@ -1,9 +1,10 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   index,
-  numeric,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -20,12 +21,14 @@ export const users = pgTable(
     image: text("image"),
     firstName: text("firstName").notNull().default(""),
     lastName: text("lastName").notNull().default(""),
+    // address1, dateOfBirth and nik hold AES-GCM ciphertext (lib/server/pii.ts).
     address1: text("address1").notNull().default(""),
     city: text("city").notNull().default(""),
-    state: text("state").notNull().default(""),
+    province: text("province").notNull().default(""),
     postalCode: text("postalCode").notNull().default(""),
     dateOfBirth: text("dateOfBirth").notNull().default(""),
-    ssnLast4: text("ssnLast4").notNull().default(""),
+    nik: text("nik").notNull().default(""),
+    nikLast4: text("nikLast4").notNull().default(""),
     createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
   },
@@ -109,20 +112,11 @@ export const bankAccounts = pgTable(
     subtype: text("subtype").notNull(),
     mask: text("mask").notNull(),
     shareableId: text("shareableId").notNull(),
-    currentBalance: numeric("currentBalance", {
-      precision: 12,
-      scale: 2,
-      mode: "number"
-    })
-      .notNull()
-      .default(0),
-    availableBalance: numeric("availableBalance", {
-      precision: 12,
-      scale: 2,
-      mode: "number"
-    })
-      .notNull()
-      .default(0),
+    // Whole rupiah. Maintained only by the ledger_posting trigger: a balance is
+    // the sum of the account's postings.
+    currency: text("currency").notNull().default("IDR"),
+    currentBalance: bigint("currentBalance", { mode: "number" }).notNull().default(0),
+    availableBalance: bigint("availableBalance", { mode: "number" }).notNull().default(0),
     routingHint: text("routingHint").notNull().default(""),
     fundingSourceUrl: text("fundingSourceUrl"),
     createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
@@ -134,6 +128,69 @@ export const bankAccounts = pgTable(
     availableNonNegative: check(
       "bank_account_available_non_negative",
       sql`${table.availableBalance} >= 0`
+    ),
+    currencyIdr: check("bank_account_currency_idr", sql`${table.currency} = 'IDR'`)
+  })
+);
+
+export const SYSTEM_ACCOUNTS = ["SANDBOX_FUNDING", "EXTERNAL_CLEARING"] as const;
+export type SystemAccount = (typeof SYSTEM_ACCOUNTS)[number];
+
+export const LEDGER_ENTRY_KINDS = [
+  "sandbox_funding",
+  "transfer",
+  "external_payment",
+  "external_receipt"
+] as const;
+
+// One balanced journal entry. Its postings must sum to zero (enforced by a
+// deferred constraint trigger in drizzle/0003_ledger_guards.sql).
+export const ledgerEntries = pgTable(
+  "ledgerEntry",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    description: text("description").notNull(),
+    occurredAt: timestamp("occurredAt", { withTimezone: true }).notNull(),
+    createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    kindValid: check(
+      "ledger_entry_kind_valid",
+      sql.raw(`"kind" in (${LEDGER_ENTRY_KINDS.map((kind) => `'${kind}'`).join(", ")})`)
+    )
+  })
+);
+
+// Signed amounts in whole rupiah: positive raises the account's balance.
+// Each posting hits exactly one customer account or one system account.
+export const ledgerPostings = pgTable(
+  "ledgerPosting",
+  {
+    id: text("id").primaryKey(),
+    entryId: text("entryId")
+      .notNull()
+      .references(() => ledgerEntries.id, { onDelete: "restrict" }),
+    bankAccountId: text("bankAccountId").references(() => bankAccounts.id, {
+      onDelete: "restrict"
+    }),
+    systemAccount: text("systemAccount"),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    entryIdx: index("ledger_posting_entry_idx").on(table.entryId),
+    bankIdx: index("ledger_posting_bank_idx").on(table.bankAccountId),
+    amountNonZero: check("ledger_posting_amount_non_zero", sql`${table.amount} <> 0`),
+    oneTarget: check(
+      "ledger_posting_one_target",
+      sql`(${table.bankAccountId} is null) <> (${table.systemAccount} is null)`
+    ),
+    systemAccountValid: check(
+      "ledger_posting_system_account_valid",
+      sql.raw(
+        `"systemAccount" is null or "systemAccount" in (${SYSTEM_ACCOUNTS.map((code) => `'${code}'`).join(", ")})`
+      )
     )
   })
 );
@@ -148,10 +205,9 @@ export const bankTransactions = pgTable(
     bankAccountId: text("bankAccountId")
       .notNull()
       .references(() => bankAccounts.id, { onDelete: "restrict" }),
+    entryId: text("entryId").references(() => ledgerEntries.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
-    amount: numeric("amount", { precision: 12, scale: 2, mode: "number" })
-      .notNull()
-      .default(0),
+    amount: bigint("amount", { mode: "number" }).notNull(),
     direction: text("direction").notNull(),
     status: text("status").notNull(),
     channel: text("channel").notNull(),
@@ -192,11 +248,12 @@ export const transfers = pgTable(
     recipientName: text("recipientName").notNull(),
     recipientEmail: text("recipientEmail").notNull(),
     recipientShareableId: text("recipientShareableId").notNull(),
-    amount: numeric("amount", { precision: 12, scale: 2, mode: "number" })
-      .notNull()
-      .default(0),
+    amount: bigint("amount", { mode: "number" }).notNull(),
     note: text("note"),
-    status: text("status").notNull().default("Processing"),
+    // pending -> settled | failed; transitions are enforced by a trigger.
+    status: text("status").notNull().default("pending"),
+    failureReason: text("failureReason"),
+    entryId: text("entryId").references(() => ledgerEntries.id, { onDelete: "restrict" }),
     channel: text("channel").notNull().default("Sandbox transfer"),
     idempotencyKey: text("idempotencyKey"),
     createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
@@ -210,7 +267,37 @@ export const transfers = pgTable(
       table.senderUserId,
       table.idempotencyKey
     ),
-    amountPositive: check("transfer_amount_positive", sql`${table.amount} > 0`)
+    amountPositive: check("transfer_amount_positive", sql`${table.amount} > 0`),
+    statusValid: check(
+      "transfer_status_valid",
+      sql`${table.status} in ('pending', 'settled', 'failed')`
+    ),
+    settledHasEntry: check(
+      "transfer_settled_has_entry",
+      sql`(${table.status} = 'settled') = (${table.entryId} is not null)`
+    )
+  })
+);
+
+// Append-only: a trigger rejects UPDATE and DELETE.
+export const auditEvents = pgTable(
+  "auditEvent",
+  {
+    id: text("id").primaryKey(),
+    actorUserId: text("actorUserId"),
+    action: text("action").notNull(),
+    outcome: text("outcome").notNull(),
+    entityType: text("entityType"),
+    entityId: text("entityId"),
+    ipAddress: text("ipAddress"),
+    userAgent: text("userAgent"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    occurredAt: timestamp("occurredAt", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    actorIdx: index("audit_event_actor_idx").on(table.actorUserId, table.occurredAt),
+    entityIdx: index("audit_event_entity_idx").on(table.entityType, table.entityId),
+    outcomeValid: check("audit_event_outcome_valid", sql`${table.outcome} in ('success', 'failure')`)
   })
 );
 
@@ -221,5 +308,8 @@ export const schema = {
   verifications,
   bankAccounts,
   bankTransactions,
-  transfers
+  transfers,
+  ledgerEntries,
+  ledgerPostings,
+  auditEvents
 };

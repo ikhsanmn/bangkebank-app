@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { formatCurrency } from "@/lib/format";
+import { MAX_TRANSFER_RUPIAH, formatCurrency, parseRupiah } from "@/lib/format";
 
 export type BankOption = {
   id: string;
@@ -34,21 +34,24 @@ type Receipt = {
   id: string;
   amount: number;
   recipientName: string;
+  status: "pending" | "settled" | "failed";
+  failureReason: string | null;
   completedAt: string | null;
 };
 
-const AMOUNT_PATTERN = /^\d+(\.\d{1,2})?$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function validate(form: FormState, bank: BankOption | undefined): FieldErrors {
   const errors: FieldErrors = {};
-  const amount = Number(form.amount);
+  const amount = parseRupiah(form.amount);
 
   if (!bank) {
     errors.senderBankAccountId = "Choose an account to send from.";
   }
-  if (!AMOUNT_PATTERN.test(form.amount) || amount <= 0) {
-    errors.amount = "Enter an amount greater than 0 with at most 2 decimals.";
+  if (amount === null || amount <= 0) {
+    errors.amount = "Enter a whole rupiah amount, e.g. 150000 or 150.000.";
+  } else if (amount > MAX_TRANSFER_RUPIAH) {
+    errors.amount = `A single transfer is limited to ${formatCurrency(MAX_TRANSFER_RUPIAH)}.`;
   } else if (bank && amount > bank.availableBalance) {
     errors.amount = `Amount exceeds the ${formatCurrency(bank.availableBalance)} available.`;
   }
@@ -113,7 +116,7 @@ export function TransferForm({ banks }: { banks: BankOption[] }) {
             senderBankAccountId: form.senderBankAccountId,
             recipientEmail: form.recipientEmail.trim(),
             recipientShareableId: form.recipientShareableId.trim(),
-            amount: Number(form.amount),
+            amount: parseRupiah(form.amount),
             note: form.note.trim() || undefined
           })
         });
@@ -123,7 +126,7 @@ export function TransferForm({ banks }: { banks: BankOption[] }) {
           error?: string;
         };
 
-        if (!response.ok || !payload.transfer) {
+        if (!response.ok || payload.transfer?.status !== "settled") {
           setStep("details");
           setError(payload.error ?? "The transfer could not be completed.");
           return;
@@ -221,7 +224,7 @@ export function TransferForm({ banks }: { banks: BankOption[] }) {
             <div className="flex justify-between gap-4">
               <dt className="text-slate-500">Amount</dt>
               <dd className="text-lg font-semibold text-[#091c31]">
-                {formatCurrency(Number(form.amount))}
+                {formatCurrency(parseRupiah(form.amount) ?? 0)}
               </dd>
             </div>
             {form.note.trim() ? (
@@ -239,7 +242,7 @@ export function TransferForm({ banks }: { banks: BankOption[] }) {
               Back
             </Button>
             <Button className="flex-1" disabled={isPending} onClick={handleConfirm}>
-              {isPending ? "Sending..." : `Confirm and send ${formatCurrency(Number(form.amount))}`}
+              {isPending ? "Sending..." : `Confirm and send ${formatCurrency(parseRupiah(form.amount) ?? 0)}`}
             </Button>
           </div>
           {error ? (
@@ -277,11 +280,11 @@ export function TransferForm({ banks }: { banks: BankOption[] }) {
               <FieldError id="source-account-error" message={fieldErrors.senderBankAccountId} />
             </div>
             <div className="space-y-3">
-              <Label htmlFor="amount">Amount (USD)</Label>
+              <Label htmlFor="amount">Amount (IDR)</Label>
               <Input
                 id="amount"
-                inputMode="decimal"
-                placeholder="0.00"
+                inputMode="numeric"
+                placeholder="150.000"
                 value={form.amount}
                 onChange={(event) => updateField("amount", event.target.value)}
                 aria-invalid={Boolean(fieldErrors.amount)}

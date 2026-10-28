@@ -24,6 +24,8 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // The Dockerfile sets NEXT_OUTPUT=standalone for a self-contained server bundle.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
   poweredByHeader: false,
   experimental: {
     typedRoutes: true

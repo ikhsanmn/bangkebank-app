@@ -6,20 +6,22 @@ import { ArrowRight, BadgeCheck } from "lucide-react";
 import { type FormEvent, useMemo, useState, useTransition } from "react";
 
 import { authClient } from "@/lib/auth-client";
+import { PROVINCES, validateNik } from "@/lib/kyc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 
 const initialForm = {
   firstName: "",
   lastName: "",
   address1: "",
   city: "",
-  state: "",
+  province: "",
   postalCode: "",
   dateOfBirth: "",
-  ssn: "",
+  nik: "",
   email: "",
   password: ""
 };
@@ -32,14 +34,12 @@ export function SignUpForm() {
 
   const fields = useMemo(
     () => [
-      { key: "firstName", label: "First name", placeholder: "Avery", autoComplete: "given-name", type: "text" },
-      { key: "lastName", label: "Last name", placeholder: "Brooks", autoComplete: "family-name", type: "text" },
-      { key: "address1", label: "Address", placeholder: "12 Example St", autoComplete: "address-line1", type: "text" },
-      { key: "city", label: "City", placeholder: "Springfield", autoComplete: "address-level2", type: "text" },
-      { key: "state", label: "State / province", placeholder: "CA", autoComplete: "address-level1", type: "text" },
-      { key: "postalCode", label: "Postal code", placeholder: "12345", autoComplete: "postal-code", type: "text" },
-      { key: "dateOfBirth", label: "Date of birth", placeholder: "", autoComplete: "bday", type: "date" },
-      { key: "ssn", label: "ID number (last 4 digits)", placeholder: "••••", autoComplete: "off", type: "password" }
+      { key: "firstName", label: "First name", placeholder: "Putri", autoComplete: "given-name", type: "text" },
+      { key: "lastName", label: "Last name", placeholder: "Lestari", autoComplete: "family-name", type: "text" },
+      { key: "address1", label: "Street address", placeholder: "Jl. Contoh No. 12", autoComplete: "address-line1", type: "text" },
+      { key: "city", label: "City / regency", placeholder: "Pangkalpinang", autoComplete: "address-level2", type: "text" },
+      { key: "postalCode", label: "Postal code", placeholder: "33111", autoComplete: "postal-code", type: "text" },
+      { key: "dateOfBirth", label: "Date of birth", placeholder: "", autoComplete: "bday", type: "date" }
     ] as const,
     []
   );
@@ -55,6 +55,12 @@ export function SignUpForm() {
     event.preventDefault();
     setError(null);
 
+    const nikError = validateNik(form.nik, form.dateOfBirth);
+    if (nikError) {
+      setError(nikError);
+      return;
+    }
+
     startTransition(async () => {
       const { error: authError } = await authClient.signUp.email({
         email: form.email,
@@ -64,10 +70,10 @@ export function SignUpForm() {
         lastName: form.lastName,
         address1: form.address1,
         city: form.city,
-        state: form.state,
+        province: form.province,
         postalCode: form.postalCode,
         dateOfBirth: form.dateOfBirth,
-        ssnLast4: form.ssn.replace(/\D/g, "").slice(-4)
+        nik: form.nik
       });
 
       if (authError) {
@@ -86,7 +92,7 @@ export function SignUpForm() {
         <div className="rounded-[24px] border border-[#ead7b0] bg-[#fff7e8] p-4 text-sm text-[#7a5822]">
           <div className="flex items-center gap-3">
             <BadgeCheck className="size-4" />
-            This is a portfolio demo. Use made-up details, not your real identity data.
+            This is a portfolio demo. Use made-up details, never a real NIK.
           </div>
         </div>
 
@@ -101,14 +107,52 @@ export function SignUpForm() {
                   required
                   autoComplete={field.autoComplete}
                   placeholder={field.placeholder}
-                  {...(field.key === "ssn"
-                    ? { inputMode: "numeric" as const, maxLength: 4, pattern: "\\d{4}" }
+                  {...(field.key === "postalCode"
+                    ? { inputMode: "numeric" as const, maxLength: 5, pattern: "\\d{5}" }
                     : {})}
                   value={form[field.key]}
                   onChange={(event) => updateField(field.key, event.target.value)}
                 />
               </div>
             ))}
+            <div className="space-y-3">
+              <Label htmlFor="province">Province</Label>
+              <Select
+                id="province"
+                required
+                autoComplete="address-level1"
+                value={form.province}
+                onChange={(event) => updateField("province", event.target.value)}
+              >
+                <option value="" disabled>
+                  Choose a province
+                </option>
+                {PROVINCES.map((province) => (
+                  <option key={province.code} value={province.name}>
+                    {province.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-3">
+              <Label htmlFor="nik">NIK (16-digit KTP number)</Label>
+              <Input
+                id="nik"
+                type="password"
+                required
+                autoComplete="off"
+                inputMode="numeric"
+                maxLength={16}
+                pattern="\d{16}"
+                aria-describedby="nik-hint"
+                placeholder="••••••••••••••••"
+                value={form.nik}
+                onChange={(event) => updateField("nik", event.target.value.replace(/\D/g, ""))}
+              />
+              <p id="nik-hint" className="text-xs text-slate-500">
+                Digits 7-12 must match your date of birth (DDMMYY, day + 40 for women). Stored encrypted.
+              </p>
+            </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">

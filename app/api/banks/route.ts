@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { auditContextFrom } from "@/lib/server/audit";
 import { readJson, invalidJson, unauthorized } from "@/lib/server/http";
 import { getRequestSession } from "@/lib/session";
 import { createBankForUser, listBanksForUser } from "@/lib/server/banking";
@@ -50,6 +51,10 @@ export async function POST(request: Request) {
     );
   }
 
-  const bank = await createBankForUser(session.user.id, parsed.data);
+  const bank = await createBankForUser(
+    session.user.id,
+    parsed.data,
+    auditContextFrom(request, session.user.id)
+  );
   return NextResponse.json({ bank }, { status: 201 });
 }
