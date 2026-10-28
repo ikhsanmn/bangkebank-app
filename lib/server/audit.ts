@@ -1,10 +1,11 @@
-import { db } from "@/lib/db";
 import { auditEvents } from "@/lib/db/schema";
+import { type TenantTx, withTenant } from "@/lib/server/tenant";
 
-type Executor = Pick<typeof db, "insert">;
+type Executor = Pick<TenantTx, "insert">;
 
 export type AuditContext = {
-  // Null for platform-level events that belong to no tenant.
+  // Required to record: row-level security only accepts rows for the
+  // transaction's tenant. Null is reserved for future platform-level events.
   tenantId?: string | null;
   actorUserId: string | null;
   ipAddress?: string | null;
@@ -34,12 +35,20 @@ export function auditContextFrom(
 }
 
 // Pass a transaction as `executor` to make the event commit or roll back with
-// the change it describes.
+// the change it describes; without one, it commits in its own tenant transaction.
 export async function recordAudit(
   context: AuditContext,
   event: AuditEvent,
-  executor: Executor = db
+  executor?: Executor
 ) {
+  if (!executor) {
+    const tenantId = context.tenantId;
+    if (!tenantId) {
+      throw new Error(`Audit event ${event.action} has no tenant.`);
+    }
+    await withTenant(tenantId, (tx) => recordAudit(context, event, tx));
+    return;
+  }
   await executor.insert(auditEvents).values({
     id: crypto.randomUUID(),
     tenantId: context.tenantId ?? null,

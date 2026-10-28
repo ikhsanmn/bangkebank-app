@@ -1,6 +1,5 @@
 import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 
-import { db } from "@/lib/db";
 import {
   bankAccounts,
   bankTransactions,
@@ -12,30 +11,20 @@ import {
   type SystemAccount
 } from "@/lib/db/schema";
 import { type AuditContext, recordAudit } from "@/lib/server/audit";
+import { type TenantTx, withTenant } from "@/lib/server/tenant";
 
 // All amounts are whole rupiah (IDR has no minor unit in everyday use).
+//
+// Every function takes the caller's tenant first and does all of its database
+// work inside withTenant, so row-level security scopes each query to it.
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Transaction = TenantTx;
 
 type Posting =
   | { bankAccountId: string; amount: number }
   | { systemAccount: SystemAccount; amount: number };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-// The tenant a user belongs to. Every row written on the user's behalf carries
-// it, and the composite foreign keys reject a row whose tenant disagrees.
-async function tenantOfUser(executor: Pick<typeof db, "select">, userId: string) {
-  const [row] = await executor
-    .select({ tenantId: users.tenantId })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-  if (!row) {
-    throw new Error(`Unknown user ${userId}.`);
-  }
-  return row.tenantId;
-}
 
 function buildShareableId() {
   return `BB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
@@ -110,8 +99,8 @@ const SEED_LINES: SeedLine[] = [
 // Opens three sandbox accounts funded from SANDBOX_FUNDING, then replays a
 // week of card and transfer activity against EXTERNAL_CLEARING. Every
 // statement line comes from a ledger entry, so balances reconcile exactly.
-export async function seedUserWorkspace(userId: string) {
-  await db.transaction(async (tx) => {
+export async function seedUserWorkspace(tenantId: string, userId: string) {
+  await withTenant(tenantId, async (tx) => {
     const existing = await tx
       .select({ id: bankAccounts.id })
       .from(bankAccounts)
@@ -122,7 +111,6 @@ export async function seedUserWorkspace(userId: string) {
       return;
     }
 
-    const tenantId = await tenantOfUser(tx, userId);
     const now = Date.now();
     const accounts = SEED_ACCOUNTS.map((account) => ({
       id: crypto.randomUUID(),
@@ -199,21 +187,25 @@ export async function seedUserWorkspace(userId: string) {
   });
 }
 
-export async function listBanksForUser(userId: string) {
-  return db
-    .select()
-    .from(bankAccounts)
-    .where(eq(bankAccounts.userId, userId))
-    // Seeded accounts share a timestamp; the name keeps their order stable.
-    .orderBy(bankAccounts.createdAt, bankAccounts.name, bankAccounts.id);
+export async function listBanksForUser(tenantId: string, userId: string) {
+  return withTenant(tenantId, (tx) =>
+    tx
+      .select()
+      .from(bankAccounts)
+      .where(eq(bankAccounts.userId, userId))
+      // Seeded accounts share a timestamp; the name keeps their order stable.
+      .orderBy(bankAccounts.createdAt, bankAccounts.name, bankAccounts.id)
+  );
 }
 
-export async function getBankForUser(userId: string, bankAccountId: string) {
-  const [bank] = await db
-    .select()
-    .from(bankAccounts)
-    .where(and(eq(bankAccounts.id, bankAccountId), eq(bankAccounts.userId, userId)))
-    .limit(1);
+export async function getBankForUser(tenantId: string, userId: string, bankAccountId: string) {
+  const [bank] = await withTenant(tenantId, (tx) =>
+    tx
+      .select()
+      .from(bankAccounts)
+      .where(and(eq(bankAccounts.id, bankAccountId), eq(bankAccounts.userId, userId)))
+      .limit(1)
+  );
 
   return bank ?? null;
 }
@@ -221,6 +213,7 @@ export async function getBankForUser(userId: string, bankAccountId: string) {
 // New accounts always open empty; the database refuses any other opening
 // balance. Money only arrives through ledger entries.
 export async function createBankForUser(
+  tenantId: string,
   userId: string,
   input: {
     institution: string;
@@ -231,8 +224,7 @@ export async function createBankForUser(
   },
   context: AuditContext = { actorUserId: userId }
 ) {
-  return db.transaction(async (tx) => {
-    const tenantId = await tenantOfUser(tx, userId);
+  return withTenant(tenantId, async (tx) => {
     const [bank] = await tx
       .insert(bankAccounts)
       .values({
@@ -260,6 +252,7 @@ export async function createBankForUser(
 const MAX_PAGE_SIZE = 100;
 
 export async function listTimelineForUser(
+  tenantId: string,
   userId: string,
   options?: {
     bankAccountId?: string;
@@ -279,28 +272,32 @@ export async function listTimelineForUser(
       )
     : eq(bankTransactions.userId, userId);
 
-  return db
-    .select()
-    .from(bankTransactions)
-    .where(where)
-    .orderBy(desc(bankTransactions.occurredAt), desc(bankTransactions.id))
-    .limit(pageSize + (options?.lookahead ?? 0))
-    .offset(offset);
+  return withTenant(tenantId, (tx) =>
+    tx
+      .select()
+      .from(bankTransactions)
+      .where(where)
+      .orderBy(desc(bankTransactions.occurredAt), desc(bankTransactions.id))
+      .limit(pageSize + (options?.lookahead ?? 0))
+      .offset(offset)
+  );
 }
 
 // Senders see all their attempts, including failed ones; recipients only see
 // money that actually arrived.
-export async function listTransfersForUser(userId: string) {
-  return db
-    .select()
-    .from(transfers)
-    .where(
-      or(
-        eq(transfers.senderUserId, userId),
-        and(eq(transfers.receiverUserId, userId), eq(transfers.status, "settled"))
+export async function listTransfersForUser(tenantId: string, userId: string) {
+  return withTenant(tenantId, (tx) =>
+    tx
+      .select()
+      .from(transfers)
+      .where(
+        or(
+          eq(transfers.senderUserId, userId),
+          and(eq(transfers.receiverUserId, userId), eq(transfers.status, "settled"))
+        )
       )
-    )
-    .orderBy(desc(transfers.createdAt));
+      .orderBy(desc(transfers.createdAt))
+  );
 }
 
 const CATEGORY_WINDOW_DAYS = 30;
@@ -308,9 +305,9 @@ const FLOW_WINDOW_DAYS = 7;
 // Asia/Jakarta (WIB) is UTC+7 all year; there is no daylight saving.
 const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
 
-export async function getDashboardData(userId: string) {
-  const accountsForUser = await listBanksForUser(userId);
-  const recent = await listTimelineForUser(userId, { pageSize: 8 });
+export async function getDashboardData(tenantId: string, userId: string) {
+  const accountsForUser = await listBanksForUser(tenantId, userId);
+  const recent = await listTimelineForUser(tenantId, userId, { pageSize: 8 });
 
   const totalBalance = accountsForUser.reduce((sum, account) => sum + account.currentBalance, 0);
   const totalAvailable = accountsForUser.reduce(
@@ -318,22 +315,24 @@ export async function getDashboardData(userId: string) {
     0
   );
 
-  const categoryRows = await db
-    .select({
-      label: bankTransactions.category,
-      value: sql<string>`sum(${bankTransactions.amount})`
-    })
-    .from(bankTransactions)
-    .where(
-      and(
-        eq(bankTransactions.userId, userId),
-        eq(bankTransactions.direction, "debit"),
-        gte(bankTransactions.occurredAt, new Date(Date.now() - CATEGORY_WINDOW_DAYS * DAY_MS))
+  const categoryRows = await withTenant(tenantId, (tx) =>
+    tx
+      .select({
+        label: bankTransactions.category,
+        value: sql<string>`sum(${bankTransactions.amount})`
+      })
+      .from(bankTransactions)
+      .where(
+        and(
+          eq(bankTransactions.userId, userId),
+          eq(bankTransactions.direction, "debit"),
+          gte(bankTransactions.occurredAt, new Date(Date.now() - CATEGORY_WINDOW_DAYS * DAY_MS))
+        )
       )
-    )
-    .groupBy(bankTransactions.category)
-    .orderBy(desc(sql`sum(${bankTransactions.amount})`))
-    .limit(5);
+      .groupBy(bankTransactions.category)
+      .orderBy(desc(sql`sum(${bankTransactions.amount})`))
+      .limit(5)
+  );
 
   const categoryBreakdown = categoryRows.map((row) => ({
     label: row.label,
@@ -346,14 +345,16 @@ export async function getDashboardData(userId: string) {
   const firstDay = new Date(jakartaToday.getTime() - (FLOW_WINDOW_DAYS - 1) * DAY_MS);
   const flowStart = new Date(firstDay.getTime() - JAKARTA_OFFSET_MS);
 
-  const flowRows = await db
-    .select({
-      day: sql<string>`to_char(${bankTransactions.occurredAt} at time zone 'Asia/Jakarta', 'YYYY-MM-DD')`,
-      net: sql<string>`sum(case when ${bankTransactions.direction} = 'credit' then ${bankTransactions.amount} else -${bankTransactions.amount} end)`
-    })
-    .from(bankTransactions)
-    .where(and(eq(bankTransactions.userId, userId), gte(bankTransactions.occurredAt, flowStart)))
-    .groupBy(sql`1`);
+  const flowRows = await withTenant(tenantId, (tx) =>
+    tx
+      .select({
+        day: sql<string>`to_char(${bankTransactions.occurredAt} at time zone 'Asia/Jakarta', 'YYYY-MM-DD')`,
+        net: sql<string>`sum(case when ${bankTransactions.direction} = 'credit' then ${bankTransactions.amount} else -${bankTransactions.amount} end)`
+      })
+      .from(bankTransactions)
+      .where(and(eq(bankTransactions.userId, userId), gte(bankTransactions.occurredAt, flowStart)))
+      .groupBy(sql`1`)
+  );
 
   const netByDay = new Map(flowRows.map((row) => [row.day, Number(row.net)]));
   const dailyNetFlow = Array.from({ length: FLOW_WINDOW_DAYS }, (_, index) => {
@@ -422,17 +423,19 @@ async function lockAccounts(tx: Transaction, ids: string[], strength: "update" |
 }
 
 async function findTransferByIdempotencyKey(tenantId: string, senderUserId: string, key: string) {
-  const [existing] = await db
-    .select()
-    .from(transfers)
-    .where(
-      and(
-        eq(transfers.tenantId, tenantId),
-        eq(transfers.senderUserId, senderUserId),
-        eq(transfers.idempotencyKey, key)
+  const [existing] = await withTenant(tenantId, (tx) =>
+    tx
+      .select()
+      .from(transfers)
+      .where(
+        and(
+          eq(transfers.tenantId, tenantId),
+          eq(transfers.senderUserId, senderUserId),
+          eq(transfers.idempotencyKey, key)
+        )
       )
-    )
-    .limit(1);
+      .limit(1)
+  );
 
   return existing ?? null;
 }
@@ -455,6 +458,7 @@ export type TransferInput = {
 // funds is kept as a `failed` transfer so the sender's history and the audit
 // trail show it. A repeated Idempotency-Key returns the original outcome.
 export async function createTransferForUser(
+  tenantId: string,
   senderUserId: string,
   input: TransferInput,
   context: AuditContext = { actorUserId: senderUserId }
@@ -465,7 +469,6 @@ export async function createTransferForUser(
 
   const amount = input.amount;
   const idempotencyKey = input.idempotencyKey ?? null;
-  const tenantId = await tenantOfUser(db, senderUserId);
   context = { ...context, tenantId };
 
   if (idempotencyKey) {
@@ -476,12 +479,12 @@ export async function createTransferForUser(
   }
 
   try {
-    const transfer = await db.transaction(async (tx) => {
+    const transfer = await withTenant(tenantId, async (tx) => {
       const [receiverBank] = await tx
         .select()
         .from(bankAccounts)
-        // Scoped to the sender's tenant: another tenant's account is
-        // indistinguishable from one that doesn't exist.
+        // RLS already hides other tenants; the explicit filter documents it.
+        // Another tenant's account is indistinguishable from a missing one.
         .where(
           and(
             eq(bankAccounts.tenantId, tenantId),
@@ -663,7 +666,7 @@ async function recordFailedTransfer(
 ) {
   const idempotencyKey = input.idempotencyKey ?? null;
   try {
-    const transfer = await db.transaction(async (tx) => {
+    const transfer = await withTenant(tenantId, async (tx) => {
       await lockAccounts(tx, [input.senderBankAccountId, receiver.bankAccountId], "key share");
       const [failed] = await tx
         .insert(transfers)
@@ -711,36 +714,40 @@ async function recordFailedTransfer(
   }
 }
 
-// Balances that disagree with the sum of their postings. Always empty unless
-// the ledger guards were bypassed; exposed for tests and operators.
-export async function findUnreconciledAccounts() {
-  const result = await db.execute<{ id: string; balance: string; posted: string }>(sql`
-    select a."id", a."currentBalance" as balance, coalesce(sum(p."amount"), 0) as posted
-      from "bankAccount" a
-      left join "ledgerPosting" p on p."bankAccountId" = a."id"
-     group by a."id"
-    having a."currentBalance" <> coalesce(sum(p."amount"), 0)
-        or a."availableBalance" <> coalesce(sum(p."amount"), 0)
-  `);
+// A tenant's balances that disagree with the sum of their postings. Always
+// empty unless the ledger guards were bypassed; exposed for tests and operators.
+export async function findUnreconciledAccounts(tenantId: string) {
+  const result = await withTenant(tenantId, (tx) =>
+    tx.execute<{ id: string; balance: string; posted: string }>(sql`
+      select a."id", a."currentBalance" as balance, coalesce(sum(p."amount"), 0) as posted
+        from "bankAccount" a
+        left join "ledgerPosting" p on p."bankAccountId" = a."id"
+       group by a."id"
+      having a."currentBalance" <> coalesce(sum(p."amount"), 0)
+          or a."availableBalance" <> coalesce(sum(p."amount"), 0)
+    `)
+  );
   return result.rows;
 }
 
-export async function getUserProfile(userId: string) {
-  const [profile] = await db
-    .select({
-      id: users.id,
-      name: users.name,
-      email: users.email,
-      firstName: users.firstName,
-      lastName: users.lastName,
-      city: users.city,
-      province: users.province,
-      postalCode: users.postalCode,
-      nikLast4: users.nikLast4
-    })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
+export async function getUserProfile(tenantId: string, userId: string) {
+  const [profile] = await withTenant(tenantId, (tx) =>
+    tx
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        city: users.city,
+        province: users.province,
+        postalCode: users.postalCode,
+        nikLast4: users.nikLast4
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+  );
 
   return profile ?? null;
 }

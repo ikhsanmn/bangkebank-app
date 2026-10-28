@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { auditContextFrom } from "@/lib/server/audit";
 import { readJson, invalidJson, unauthorized } from "@/lib/server/http";
-import { getRequestSession } from "@/lib/session";
+import { getRequestSession, WEB_TENANT_ID } from "@/lib/session";
 import { createBankForUser, listBanksForUser } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
@@ -26,7 +26,7 @@ export async function GET(request: Request) {
     return unauthorized();
   }
 
-  const banks = await listBanksForUser(session.user.id);
+  const banks = await listBanksForUser(WEB_TENANT_ID, session.user.id);
   return NextResponse.json({ banks });
 }
 
@@ -52,6 +52,7 @@ export async function POST(request: Request) {
   }
 
   const bank = await createBankForUser(
+    WEB_TENANT_ID,
     session.user.id,
     parsed.data,
     auditContextFrom(request, session.user.id)

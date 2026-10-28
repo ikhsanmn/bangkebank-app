@@ -1,7 +1,9 @@
 import { afterAll } from "vitest";
 
-import { pool } from "@/lib/db";
+import { authPool, pool } from "@/lib/db";
+
+import { adminPool } from "./admin-db";
 
 afterAll(async () => {
-  await pool.end();
+  await Promise.all([pool.end(), authPool.end(), adminPool.end()]);
 });

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { unauthorized } from "@/lib/server/http";
-import { getRequestSession } from "@/lib/session";
+import { getRequestSession, WEB_TENANT_ID } from "@/lib/session";
 import { getBankForUser, listTimelineForUser } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
@@ -35,13 +35,13 @@ export async function GET(
     );
   }
 
-  const bank = await getBankForUser(session.user.id, context.params.bankId);
+  const bank = await getBankForUser(WEB_TENANT_ID, session.user.id, context.params.bankId);
   if (!bank) {
     return NextResponse.json({ error: "Bank account not found." }, { status: 404 });
   }
 
   const { page, pageSize } = query.data;
-  const transactions = await listTimelineForUser(session.user.id, {
+  const transactions = await listTimelineForUser(WEB_TENANT_ID, session.user.id, {
     bankAccountId: bank.id,
     page,
     pageSize

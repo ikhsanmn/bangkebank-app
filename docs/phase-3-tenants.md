@@ -1,6 +1,6 @@
 # Phase 3 plan: tenants and API keys for fintech clients
 
-Status: **in progress**. Task 1 done (see [Progress](#progress)). Branch:
+Status: **in progress**. Tasks 1–3 done (see [Progress](#progress)). Branch:
 `phase-3-tenants` (from `phase-2-ledger`).
 
 Phase 2 gave every rupiah a ledger, an audit trail and DB-enforced invariants.
@@ -94,10 +94,14 @@ runs after the SQL migrations (SQL can't compute the HMAC).
 - An unset `app.tenant_id` matches no rows, so a forgotten `withTenant` fails
   closed (empty results or failed inserts), never open.
 - better-auth's own tables (`session`, `account`, `verification`) stay outside RLS.
-  The `user` table needs a policy that also lets better-auth read a user by id
-  during session lookup; the plan is a second policy that allows reads when
-  `app.tenant_id` is unset *and* the role is the auth role. **This is the
-  riskiest part of the phase and gets a spike first** (task 2).
+  **Decided in task 2:** `user` stays under RLS. better-auth gets its own
+  connection pool (`authPool`) whose connections are pinned to the demo tenant
+  at startup, because better-auth only serves the web app, which *is* the demo
+  tenant. Console staff will be demo-tenant users with `tenantMember` grants,
+  so they sign in the same way. The main pool sets no tenant, so it still
+  fails closed.
+- `tenant` and `tenantMember` are outside RLS: the console looks up a user's
+  memberships across tenants before it knows which tenant to scope to.
 
 ### API keys
 
@@ -198,11 +202,14 @@ Each task ends with tests passing, lint and typecheck clean, and its own commit.
 - **Ledger triggers and RLS interplay:** `bb_apply_posting` updates `bankAccount`
   under the caller's tenant setting. The tests must cover it, and the trigger
   functions may need `SECURITY DEFINER` with a pinned `search_path`.
-- **Login lookups across tenants (until task 2):** better-auth finds users by
-  email without a tenant, so once another tenant has a customer with the same
-  email as a demo user, web sign-in and sign-up can hit the wrong row. No such
-  customers can exist until the partner API (task 6), and RLS in task 2 scopes
-  the lookup.
+- **The app role is set per connection, not per login.** The pools connect with
+  `DATABASE_URL`'s user and start each session as `bangkebank_app` (startup
+  option `role`). Code running SQL could `RESET ROLE` back to that user. For a
+  real deployment, give the app its own LOGIN role that is a member of
+  `bangkebank_app` only, and keep the owner credentials for migrations.
+- **FORCE RLS binds the table owner too.** Future data migrations that run as a
+  non-superuser owner must `set_config('app.tenant_id', …)` per tenant, or they
+  will see no rows. (Superusers, as in local dev and CI, bypass RLS.)
 
 ## Progress
 
@@ -226,10 +233,54 @@ Each task ends with tests passing, lint and typecheck clean, and its own commit.
   the database refuses cross-tenant postings, entries, transfers and statement
   lines; email/NIK uniqueness per tenant with the demo exemption; app and
   backfill derive the same NIK hash; sign-up ignores a forged tenant.
-- **Verified:** 39/39 tests, lint, typecheck, `next build`, and the Drizzle drift
+- **Verified at the time:** 39/39 tests, lint, typecheck, `next build`, and the Drizzle drift
   check. An upgrade check migrated a database holding Phase-2-shaped data
   (users with encrypted NIKs, a funded account, a settled transfer, an audit
   event) to `0004`. Everything landed in the demo tenant with no leftover
   column defaults, NIK hashes were backfilled, balances still reconcile, the
   per-tenant ledger sums to zero, no single-column foreign keys remain, and
   audit rows are still append-only.
+
+### Tasks 2 and 3: row-level security, tenants through the services (done)
+
+Tasks 2 and 3 merged: once RLS is enforced, every query without a tenant
+returns nothing, so the spike couldn't land without threading tenants through
+the service layer.
+
+- `drizzle/0005_tenant_rls.sql`:
+  - creates the `bangkebank_app` role idempotently (roles are cluster-wide):
+    NOLOGIN, NOSUPERUSER, NOBYPASSRLS, granted to the migrating user;
+  - grants table privileges, including default privileges for future tables;
+  - adds `bb_current_tenant()`;
+  - enables and forces RLS with a `tenant_isolation` policy (`USING` and
+    `WITH CHECK`) on `user`, `bankAccount`, `ledgerEntry`, `ledgerPosting`,
+    `bankTransaction`, `transfer` and `auditEvent`.
+- `lib/db`: both pools connect with `-c role=bangkebank_app`; `authPool` also sets
+  `app.tenant_id=tnt_demo`. Startup options rather than a `SET` on connect, so
+  no query can run before they apply (and no reliance on pg's deprecated query
+  queueing).
+- `lib/server/tenant.ts`: `withTenant(tenantId, fn)` runs `fn` in a transaction
+  with a transaction-local `app.tenant_id`.
+- Every function in `lib/server/banking.ts` takes the tenant first and runs inside
+  `withTenant`. `recordAudit` without a transaction opens its own tenant
+  transaction and refuses an event with no tenant. Web routes and pages pass
+  `WEB_TENANT_ID` (the demo tenant) from `lib/session.ts`.
+- This closes the task 1 gap: better-auth's email lookup can no longer see
+  another tenant's customer with the same email.
+- Tests now call services as the app role (under RLS) and assert through
+  `tests/admin-db.ts`, a separate observer connection.
+- `tests/rls.test.ts` (7 tests):
+  - the app runs as a role with no superuser and no BYPASSRLS;
+  - RLS is enabled and forced on every table with a `tenantId` (tenantMember
+    exempt by design);
+  - with no tenant set, reads return nothing and writes are refused;
+  - a tenant sees only its own rows, and a service call with the wrong tenant
+    finds nothing;
+  - writes into another tenant are refused, and updates to its rows touch 0 rows;
+  - the setting doesn't leak to the next user of a pooled connection;
+  - web sign-in finds the demo user even when a fintech customer has the same
+    email.
+- **Verified:** 46/46 tests (the ledger triggers, including the deferred balance
+  check and the 40-way deadlock test, all work under RLS), lint, typecheck,
+  `next build`, the drift check, and the Phase 2 end-to-end script against the
+  production build (32/32, clean server log).

@@ -3,15 +3,23 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bankAccounts, DEMO_TENANT_ID, tenants, users } from "@/lib/db/schema";
 import { seedUserWorkspace } from "@/lib/server/banking";
+import { withTenant } from "@/lib/server/tenant";
+
+import { adminDb } from "./admin-db";
+
+export { adminDb };
 
 // A user with the standard seeded workspace, created directly in the database
-// (sign-up itself goes through better-auth and is covered end to end).
+// as the app role (sign-up itself goes through better-auth). Assertions read
+// through adminDb, which sees every tenant.
 export async function createSeededUser(label = "user", tenantId = DEMO_TENANT_ID) {
   const id = crypto.randomUUID();
   const email = `${label}-${id.slice(0, 8)}@example.test`;
-  await db.insert(users).values({ id, tenantId, name: `${label} test`, email });
-  await seedUserWorkspace(id);
-  const accounts = await db
+  await withTenant(tenantId, (tx) =>
+    tx.insert(users).values({ id, tenantId, name: `${label} test`, email })
+  );
+  await seedUserWorkspace(tenantId, id);
+  const accounts = await adminDb
     .select()
     .from(bankAccounts)
     .where(eq(bankAccounts.userId, id))
@@ -26,7 +34,7 @@ export async function createTenant(label = "fintech") {
 }
 
 export async function balanceOf(bankAccountId: string) {
-  const [row] = await db
+  const [row] = await adminDb
     .select({ current: bankAccounts.currentBalance, available: bankAccounts.availableBalance })
     .from(bankAccounts)
     .where(eq(bankAccounts.id, bankAccountId));
@@ -34,7 +42,7 @@ export async function balanceOf(bankAccountId: string) {
 }
 
 export async function count(table: string, where = "true") {
-  const result = await db.execute<{ n: string }>(
+  const result = await adminDb.execute<{ n: string }>(
     sql.raw(`select count(*)::text as n from "${table}" where ${where}`)
   );
   return Number(result.rows[0].n);

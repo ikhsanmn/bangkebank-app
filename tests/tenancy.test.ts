@@ -2,7 +2,6 @@ import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
 import {
   auditEvents,
   bankTransactions,
@@ -17,7 +16,7 @@ import { hashNik } from "@/lib/server/pii";
 
 // @ts-expect-error -- plain ESM script without type declarations
 import { hashNikValue } from "../scripts/db/encrypt-legacy-pii.mjs";
-import { createSeededUser, createTenant, dbError } from "./helpers";
+import { adminDb, createSeededUser, createTenant, dbError } from "./helpers";
 
 const EXAMPLE_NIK = "1971015708900001";
 
@@ -27,7 +26,7 @@ describe("tenancy", () => {
     const user = await createSeededUser("workspace", tenantId);
 
     expect(user.accounts.every((account) => account.tenantId === tenantId)).toBe(true);
-    const lines = await db.select().from(bankTransactions).where(eq(bankTransactions.userId, user.id));
+    const lines = await adminDb.select().from(bankTransactions).where(eq(bankTransactions.userId, user.id));
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.every((line) => line.tenantId === tenantId)).toBe(true);
   });
@@ -36,14 +35,14 @@ describe("tenancy", () => {
     const tenantId = await createTenant("balanced");
     const alice = await createSeededUser("balanced-a", tenantId);
     const bob = await createSeededUser("balanced-b", tenantId);
-    await createTransferForUser(alice.id, {
+    await createTransferForUser(alice.tenantId, alice.id, {
       senderBankAccountId: alice.accounts[0].id,
       recipientEmail: bob.email,
       recipientShareableId: bob.accounts[0].shareableId,
       amount: 125_000
     });
 
-    const result = await db.execute<{ tenantId: string; total: string }>(sql`
+    const result = await adminDb.execute<{ tenantId: string; total: string }>(sql`
       select "tenantId", sum("amount")::text as total from "ledgerPosting" group by "tenantId"
     `);
     expect(result.rows.length).toBeGreaterThanOrEqual(2);
@@ -56,7 +55,7 @@ describe("tenancy", () => {
     const alice = await createSeededUser("cross-a", tenantA);
     const bob = await createSeededUser("cross-b", tenantB);
 
-    const attempt = createTransferForUser(alice.id, {
+    const attempt = createTransferForUser(alice.tenantId, alice.id, {
       senderBankAccountId: alice.accounts[0].id,
       recipientEmail: bob.email,
       recipientShareableId: bob.accounts[0].shareableId,
@@ -65,7 +64,7 @@ describe("tenancy", () => {
     await expect(attempt).rejects.toThrow(TransferError);
     await expect(attempt).rejects.toThrow(/No account matches/);
 
-    const rejected = await db
+    const rejected = await adminDb
       .select()
       .from(auditEvents)
       .where(eq(auditEvents.entityId, alice.accounts[0].id));
@@ -78,7 +77,7 @@ describe("tenancy", () => {
     const victim = await createSeededUser("victim");
     const intruder = await createSeededUser("intruder", tenantB);
 
-    const postToVictim = db.transaction(async (tx) => {
+    const postToVictim = adminDb.transaction(async (tx) => {
       const entryId = crypto.randomUUID();
       await tx.insert(ledgerEntries).values({
         id: entryId,
@@ -94,12 +93,12 @@ describe("tenancy", () => {
     });
     expect(await dbError(postToVictim)).toMatch(/ledger_posting_bank_fk/);
 
-    const [victimEntry] = await db
+    const [victimEntry] = await adminDb
       .select({ id: ledgerEntries.id })
       .from(ledgerEntries)
       .where(eq(ledgerEntries.tenantId, DEMO_TENANT_ID))
       .limit(1);
-    const attachToVictimEntry = db.insert(ledgerPostings).values({
+    const attachToVictimEntry = adminDb.insert(ledgerPostings).values({
       id: crypto.randomUUID(),
       tenantId: tenantB,
       entryId: victimEntry.id,
@@ -114,7 +113,7 @@ describe("tenancy", () => {
     const alice = await createSeededUser("mixed-a");
     const bob = await createSeededUser("mixed-b", tenantB);
 
-    const crossTransfer = db.insert(transfers).values({
+    const crossTransfer = adminDb.insert(transfers).values({
       id: crypto.randomUUID(),
       tenantId: DEMO_TENANT_ID,
       senderUserId: alice.id,
@@ -129,7 +128,7 @@ describe("tenancy", () => {
     });
     expect(await dbError(crossTransfer)).toMatch(/transfer_receiver_(user|bank)_fk/);
 
-    const foreignLine = db.insert(bankTransactions).values({
+    const foreignLine = adminDb.insert(bankTransactions).values({
       id: crypto.randomUUID(),
       tenantId: tenantB,
       userId: bob.id,
@@ -160,15 +159,15 @@ describe("tenancy", () => {
       ...overrides
     });
 
-    await db.insert(users).values(row(tenantA));
-    await db.insert(users).values(row(tenantB));
-    expect(await dbError(db.insert(users).values(row(tenantA)))).toMatch(/user_tenant_email_key/);
+    await adminDb.insert(users).values(row(tenantA));
+    await adminDb.insert(users).values(row(tenantB));
+    expect(await dbError(adminDb.insert(users).values(row(tenantA)))).toMatch(/user_tenant_email_key/);
     expect(
-      await dbError(db.insert(users).values(row(tenantA, { email: `other-${email}` })))
+      await dbError(adminDb.insert(users).values(row(tenantA, { email: `other-${email}` })))
     ).toMatch(/user_tenant_nik_key/);
 
-    await db.insert(users).values(row(DEMO_TENANT_ID, { email: `demo1-${email}` }));
-    await db.insert(users).values(row(DEMO_TENANT_ID, { email: `demo2-${email}` }));
+    await adminDb.insert(users).values(row(DEMO_TENANT_ID, { email: `demo1-${email}` }));
+    await adminDb.insert(users).values(row(DEMO_TENANT_ID, { email: `demo2-${email}` }));
   });
 
   it("derives the NIK hash identically in the app and the backfill script", () => {
@@ -197,12 +196,12 @@ describe("tenancy", () => {
       } as Record<string, unknown> as never
     });
 
-    const [created] = await db.select().from(users).where(eq(users.email, email));
+    const [created] = await adminDb.select().from(users).where(eq(users.email, email));
     expect(created.tenantId).toBe(DEMO_TENANT_ID);
     expect(created.nikHash).toBe(hashNik(EXAMPLE_NIK));
     expect(created.nik).not.toContain(EXAMPLE_NIK);
 
-    const [signedUp] = await db
+    const [signedUp] = await adminDb
       .select()
       .from(auditEvents)
       .where(eq(auditEvents.actorUserId, created.id));

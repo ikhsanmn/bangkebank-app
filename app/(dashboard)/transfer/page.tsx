@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { listBanksForUser, listTransfersForUser } from "@/lib/server/banking";
-import { requireServerSession } from "@/lib/session";
+import { requireServerSession, WEB_TENANT_ID } from "@/lib/session";
 
 const RECENT_TRANSFER_COUNT = 5;
 
@@ -19,8 +19,8 @@ const STATUS_BADGES = {
 export default async function TransferPage() {
   const session = await requireServerSession();
   const [banks, transferList] = await Promise.all([
-    listBanksForUser(session.user.id),
-    listTransfersForUser(session.user.id)
+    listBanksForUser(WEB_TENANT_ID, session.user.id),
+    listTransfersForUser(WEB_TENANT_ID, session.user.id)
   ]);
   const recent = transferList.slice(0, RECENT_TRANSFER_COUNT);
 

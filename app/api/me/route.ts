@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { unauthorized } from "@/lib/server/http";
-import { getRequestSession } from "@/lib/session";
+import { getRequestSession, WEB_TENANT_ID } from "@/lib/session";
 import { getUserProfile } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
@@ -15,6 +15,6 @@ export async function GET(request: Request) {
     return unauthorized();
   }
 
-  const profile = await getUserProfile(session.user.id);
+  const profile = await getUserProfile(WEB_TENANT_ID, session.user.id);
   return NextResponse.json({ profile });
 }

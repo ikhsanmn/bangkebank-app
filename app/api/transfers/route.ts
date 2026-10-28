@@ -4,7 +4,7 @@ import { z } from "zod";
 import { MAX_TRANSFER_RUPIAH } from "@/lib/format";
 import { auditContextFrom } from "@/lib/server/audit";
 import { readJson, invalidJson, unauthorized } from "@/lib/server/http";
-import { getRequestSession } from "@/lib/session";
+import { getRequestSession, WEB_TENANT_ID } from "@/lib/session";
 import {
   TransferError,
   createTransferForUser,
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     return unauthorized();
   }
 
-  const transferList = await listTransfersForUser(session.user.id);
+  const transferList = await listTransfersForUser(WEB_TENANT_ID, session.user.id);
   return NextResponse.json({ transfers: transferList });
 }
 
@@ -67,6 +67,7 @@ export async function POST(request: Request) {
 
   try {
     const { transfer, replayed } = await createTransferForUser(
+      WEB_TENANT_ID,
       session.user.id,
       { ...parsed.data, idempotencyKey: key?.data },
       auditContextFrom(request, session.user.id)

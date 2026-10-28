@@ -11,13 +11,13 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/format";
 import { getDashboardData } from "@/lib/server/banking";
-import { requireServerSession } from "@/lib/session";
+import { requireServerSession, WEB_TENANT_ID } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { toAccountView, toTransactionView } from "@/lib/views";
 
 export default async function DashboardPage() {
   const session = await requireServerSession();
-  const dashboard = await getDashboardData(session.user.id);
+  const dashboard = await getDashboardData(WEB_TENANT_ID, session.user.id);
   const accounts = dashboard.accounts.map(toAccountView);
   const firstName =
     ("firstName" in session.user && typeof session.user.firstName === "string"

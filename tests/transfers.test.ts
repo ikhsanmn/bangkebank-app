@@ -1,8 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
-import { db } from "@/lib/db";
-import { auditEvents, ledgerEntries, transfers } from "@/lib/db/schema";
+import { auditEvents, DEMO_TENANT_ID, ledgerEntries, transfers } from "@/lib/db/schema";
 import {
   TransferError,
   createTransferForUser,
@@ -10,7 +9,7 @@ import {
   listTransfersForUser
 } from "@/lib/server/banking";
 
-import { balanceOf, count, createSeededUser } from "./helpers";
+import { adminDb, balanceOf, count, createSeededUser } from "./helpers";
 
 function account(user: Awaited<ReturnType<typeof createSeededUser>>, name: string) {
   const found = user.accounts.find((candidate) => candidate.name === name);
@@ -25,7 +24,7 @@ describe("createTransferForUser", () => {
     const from = account(alice, "Main Account");
     const to = account(bob, "Main Account");
 
-    const { transfer, replayed } = await createTransferForUser(alice.id, {
+    const { transfer, replayed } = await createTransferForUser(alice.tenantId, alice.id, {
       senderBankAccountId: from.id,
       recipientEmail: bob.email.toUpperCase(),
       recipientShareableId: to.shareableId,
@@ -39,11 +38,11 @@ describe("createTransferForUser", () => {
     expect((await balanceOf(from.id)).current).toBe(from.currentBalance - 1_250_000);
     expect((await balanceOf(to.id)).current).toBe(to.currentBalance + 1_250_000);
 
-    const [entry] = await db.select().from(ledgerEntries).where(eq(ledgerEntries.id, transfer.entryId!));
+    const [entry] = await adminDb.select().from(ledgerEntries).where(eq(ledgerEntries.id, transfer.entryId!));
     expect(entry.kind).toBe("transfer");
     expect(await count("ledgerPosting", `"entryId" = '${transfer.entryId}'`)).toBe(2);
     expect(await count("auditEvent", `"entityId" = '${transfer.id}' and "action" = 'transfer.settled'`)).toBe(1);
-    expect(await findUnreconciledAccounts()).toEqual([]);
+    expect(await findUnreconciledAccounts(DEMO_TENANT_ID)).toEqual([]);
   });
 
   it("lets exactly the affordable share of concurrent transfers through", async () => {
@@ -55,7 +54,7 @@ describe("createTransferForUser", () => {
 
     const results = await Promise.all(
       Array.from({ length: 10 }, () =>
-        createTransferForUser(alice.id, {
+        createTransferForUser(alice.tenantId, alice.id, {
           senderBankAccountId: from.id,
           recipientEmail: bob.email,
           recipientShareableId: to.shareableId,
@@ -72,7 +71,7 @@ describe("createTransferForUser", () => {
     expect(
       await count("auditEvent", `"actorUserId" = '${alice.id}' and "action" = 'transfer.failed'`)
     ).toBe(8);
-    expect(await findUnreconciledAccounts()).toEqual([]);
+    expect(await findUnreconciledAccounts(DEMO_TENANT_ID)).toEqual([]);
   });
 
   it("never deadlocks with transfers racing in both directions", async () => {
@@ -87,7 +86,7 @@ describe("createTransferForUser", () => {
     const results = await Promise.all(
       Array.from({ length: 40 }, (_, index) => {
         const [from, fromUser, to, toUser] = index % 2 ? [a, alice, b, bob] : [b, bob, a, alice];
-        return createTransferForUser(fromUser.id, {
+        return createTransferForUser(fromUser.tenantId, fromUser.id, {
           senderBankAccountId: from.id,
           recipientEmail: toUser.email,
           recipientShareableId: to.shareableId,
@@ -99,7 +98,7 @@ describe("createTransferForUser", () => {
     expect(results).toHaveLength(40);
     expect(results.filter((result) => result.transfer.status === "failed").length).toBeGreaterThanOrEqual(14);
     expect((await balanceOf(a.id)).current + (await balanceOf(b.id)).current).toBe(total);
-    expect(await findUnreconciledAccounts()).toEqual([]);
+    expect(await findUnreconciledAccounts(DEMO_TENANT_ID)).toEqual([]);
   });
 
   it("records an unaffordable transfer as failed without moving money", async () => {
@@ -108,7 +107,7 @@ describe("createTransferForUser", () => {
     const from = account(alice, "Main Account");
     const to = account(bob, "Main Account");
 
-    const { transfer } = await createTransferForUser(alice.id, {
+    const { transfer } = await createTransferForUser(alice.tenantId, alice.id, {
       senderBankAccountId: from.id,
       recipientEmail: bob.email,
       recipientShareableId: to.shareableId,
@@ -120,8 +119,8 @@ describe("createTransferForUser", () => {
     expect(transfer.failureReason).toMatch(/insufficient/i);
     expect((await balanceOf(from.id)).current).toBe(from.currentBalance);
     // The sender sees the failed attempt; the recipient does not.
-    expect((await listTransfersForUser(alice.id)).map((row) => row.id)).toContain(transfer.id);
-    expect((await listTransfersForUser(bob.id)).map((row) => row.id)).not.toContain(transfer.id);
+    expect((await listTransfersForUser(alice.tenantId, alice.id)).map((row) => row.id)).toContain(transfer.id);
+    expect((await listTransfersForUser(bob.tenantId, bob.id)).map((row) => row.id)).not.toContain(transfer.id);
   });
 
   it("returns the original outcome for a repeated idempotency key, even under a race", async () => {
@@ -138,17 +137,17 @@ describe("createTransferForUser", () => {
     };
 
     const results = await Promise.all([
-      createTransferForUser(alice.id, input),
-      createTransferForUser(alice.id, input),
-      createTransferForUser(alice.id, input)
+      createTransferForUser(alice.tenantId, alice.id, input),
+      createTransferForUser(alice.tenantId, alice.id, input),
+      createTransferForUser(alice.tenantId, alice.id, input)
     ]);
-    const replay = await createTransferForUser(alice.id, input);
+    const replay = await createTransferForUser(alice.tenantId, alice.id, input);
 
     expect(new Set([...results, replay].map((result) => result.transfer.id)).size).toBe(1);
     expect(replay.replayed).toBe(true);
     expect((await balanceOf(from.id)).current).toBe(from.currentBalance - 100_000);
     expect(
-      await db
+      await adminDb
         .select()
         .from(transfers)
         .where(and(eq(transfers.senderUserId, alice.id), eq(transfers.idempotencyKey, input.idempotencyKey)))
@@ -164,7 +163,7 @@ describe("createTransferForUser", () => {
     const bob = await createSeededUser("reject-bob");
     const ctx = { alice, bob, from: account(alice, "Main Account"), to: account(bob, "Main Account") };
 
-    const attempt = createTransferForUser(alice.id, {
+    const attempt = createTransferForUser(alice.tenantId, alice.id, {
       senderBankAccountId: ctx.from.id,
       amount: 10_000,
       ...build(ctx)
@@ -174,7 +173,7 @@ describe("createTransferForUser", () => {
     await expect(attempt).rejects.toMatchObject({ status });
     expect((await balanceOf(ctx.from.id)).current).toBe(ctx.from.currentBalance);
     expect(await count("transfer", `"senderUserId" = '${alice.id}'`)).toBe(0);
-    const rejected = await db
+    const rejected = await adminDb
       .select()
       .from(auditEvents)
       .where(and(eq(auditEvents.actorUserId, alice.id), eq(auditEvents.action, "transfer.rejected")));
@@ -184,7 +183,7 @@ describe("createTransferForUser", () => {
   it("refuses to send from someone else's account", async () => {
     const alice = await createSeededUser("thief");
     const bob = await createSeededUser("victim");
-    const attempt = createTransferForUser(alice.id, {
+    const attempt = createTransferForUser(alice.tenantId, alice.id, {
       senderBankAccountId: account(bob, "Main Account").id,
       recipientEmail: alice.email,
       recipientShareableId: account(alice, "Main Account").shareableId,
@@ -197,7 +196,7 @@ describe("createTransferForUser", () => {
     const alice = await createSeededUser("frac");
     for (const amount of [0, -5, 10.5, Number.NaN]) {
       await expect(
-        createTransferForUser(alice.id, {
+        createTransferForUser(alice.tenantId, alice.id, {
           senderBankAccountId: account(alice, "Main Account").id,
           recipientEmail: alice.email,
           recipientShareableId: account(alice, "Emergency Fund").shareableId,

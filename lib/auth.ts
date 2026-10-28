@@ -1,9 +1,8 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
-import { eq } from "drizzle-orm";
 
-import { db } from "@/lib/db";
+import { authDb } from "@/lib/db";
 import { accounts, DEMO_TENANT_ID, sessions, users, verifications } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { isPostalCode, isProvince, validateDateOfBirth, validateNik } from "@/lib/kyc";
@@ -62,7 +61,7 @@ function prepareIdentity<T extends Record<string, unknown>>(user: T) {
 function auditContext(
   context: { request?: Request } | null,
   actorUserId: string,
-  tenantId: string | null
+  tenantId: string
 ) {
   const base = context?.request
     ? auditContextFrom(context.request, actorUserId)
@@ -74,7 +73,9 @@ export const auth = betterAuth({
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
   trustedOrigins: [env.BETTER_AUTH_URL],
-  database: drizzleAdapter(db, {
+  // authDb is pinned to the demo tenant (lib/db), so every user lookup,
+  // including sign-in by email, only ever sees web-app users.
+  database: drizzleAdapter(authDb, {
     provider: "pg",
     // better-auth looks models up by singular name; our tables are exported plural.
     schema: {
@@ -144,9 +145,8 @@ export const auth = betterAuth({
       create: {
         before: async (user) => ({ data: prepareIdentity(user) }),
         after: async (user, context) => {
-          await seedUserWorkspace(user.id);
-          const tenantId = (user as { tenantId?: string }).tenantId ?? DEMO_TENANT_ID;
-          await recordAudit(auditContext(context, user.id, tenantId), {
+          await seedUserWorkspace(DEMO_TENANT_ID, user.id);
+          await recordAudit(auditContext(context, user.id, DEMO_TENANT_ID), {
             action: "user.signed_up",
             outcome: "success",
             entityType: "user",
@@ -168,12 +168,7 @@ export const auth = betterAuth({
     session: {
       create: {
         after: async (session, context) => {
-          const [owner] = await db
-            .select({ tenantId: users.tenantId })
-            .from(users)
-            .where(eq(users.id, session.userId))
-            .limit(1);
-          await recordAudit(auditContext(context, session.userId, owner?.tenantId ?? null), {
+          await recordAudit(auditContext(context, session.userId, DEMO_TENANT_ID), {
             action: "session.created",
             outcome: "success",
             entityType: "session",

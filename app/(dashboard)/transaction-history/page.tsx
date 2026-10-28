@@ -8,7 +8,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/format";
 import { listBanksForUser, listTimelineForUser } from "@/lib/server/banking";
-import { requireServerSession } from "@/lib/session";
+import { requireServerSession, WEB_TENANT_ID } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { toAccountView, toTransactionView } from "@/lib/views";
 
@@ -28,7 +28,7 @@ export default async function TransactionHistoryPage({
   searchParams: { account?: string; page?: string };
 }) {
   const session = await requireServerSession();
-  const accounts = (await listBanksForUser(session.user.id)).map(toAccountView);
+  const accounts = (await listBanksForUser(WEB_TENANT_ID, session.user.id)).map(toAccountView);
 
   // Only accept an account filter that belongs to this user.
   const selected = accounts.find((account) => account.id === searchParams.account);
@@ -36,7 +36,7 @@ export default async function TransactionHistoryPage({
   const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
 
   // Fetch one extra row to learn whether a next page exists.
-  const rows = await listTimelineForUser(session.user.id, {
+  const rows = await listTimelineForUser(WEB_TENANT_ID, session.user.id, {
     bankAccountId: selected?.id,
     page,
     pageSize: PAGE_SIZE,

@@ -5,13 +5,13 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/format";
 import { listBanksForUser } from "@/lib/server/banking";
-import { requireServerSession } from "@/lib/session";
+import { requireServerSession, WEB_TENANT_ID } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 // Post-signup landing: shows the sandbox accounts the demo created for this user.
 export default async function ConnectBankPage() {
   const session = await requireServerSession();
-  const banks = await listBanksForUser(session.user.id);
+  const banks = await listBanksForUser(WEB_TENANT_ID, session.user.id);
 
   return (
     <main className="min-h-screen bg-[#071421] px-6 py-10 text-white sm:px-10 lg:px-14">

@@ -1,11 +1,10 @@
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
-import { db } from "@/lib/db";
-import { bankTransactions, ledgerPostings } from "@/lib/db/schema";
+import { bankTransactions, DEMO_TENANT_ID, ledgerPostings } from "@/lib/db/schema";
 import { findUnreconciledAccounts, getDashboardData } from "@/lib/server/banking";
 
-import { createSeededUser } from "./helpers";
+import { adminDb, createSeededUser } from "./helpers";
 
 describe("seeded workspace", () => {
   it("derives every balance from balanced ledger entries", async () => {
@@ -21,16 +20,16 @@ describe("seeded workspace", () => {
       expect(account.currency).toBe("IDR");
     }
 
-    const unbalanced = await db.execute(sql`
+    const unbalanced = await adminDb.execute(sql`
       select "entryId" from "ledgerPosting" group by "entryId" having sum("amount") <> 0
     `);
     expect(unbalanced.rows).toEqual([]);
-    expect(await findUnreconciledAccounts()).toEqual([]);
+    expect(await findUnreconciledAccounts(DEMO_TENANT_ID)).toEqual([]);
   });
 
   it("gives every statement line a ledger posting of the same signed amount", async () => {
     const user = await createSeededUser("lines");
-    const lines = await db
+    const lines = await adminDb
       .select({
         amount: bankTransactions.amount,
         direction: bankTransactions.direction,
@@ -52,14 +51,14 @@ describe("seeded workspace", () => {
   it("is idempotent", async () => {
     const user = await createSeededUser("again");
     const { seedUserWorkspace } = await import("@/lib/server/banking");
-    await seedUserWorkspace(user.id);
-    const dashboard = await getDashboardData(user.id);
+    await seedUserWorkspace(user.tenantId, user.id);
+    const dashboard = await getDashboardData(user.tenantId, user.id);
     expect(dashboard.accounts).toHaveLength(3);
   });
 
   it("reports whole-rupiah dashboard figures", async () => {
     const user = await createSeededUser("dash");
-    const dashboard = await getDashboardData(user.id);
+    const dashboard = await getDashboardData(user.tenantId, user.id);
     const total = user.accounts.reduce((sum, account) => sum + account.currentBalance, 0);
 
     expect(dashboard.totals.totalBalance).toBe(total);

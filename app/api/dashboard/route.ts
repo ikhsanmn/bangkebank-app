@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { unauthorized } from "@/lib/server/http";
-import { getRequestSession } from "@/lib/session";
+import { getRequestSession, WEB_TENANT_ID } from "@/lib/session";
 import { getDashboardData, getUserProfile } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
@@ -14,8 +14,8 @@ export async function GET(request: Request) {
   }
 
   const [dashboard, profile] = await Promise.all([
-    getDashboardData(session.user.id),
-    getUserProfile(session.user.id)
+    getDashboardData(WEB_TENANT_ID, session.user.id),
+    getUserProfile(WEB_TENANT_ID, session.user.id)
   ]);
 
   return NextResponse.json({

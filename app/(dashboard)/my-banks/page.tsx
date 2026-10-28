@@ -5,12 +5,12 @@ import { PageHeader } from "@/components/horizon/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/format";
 import { listBanksForUser } from "@/lib/server/banking";
-import { requireServerSession } from "@/lib/session";
+import { requireServerSession, WEB_TENANT_ID } from "@/lib/session";
 import { toAccountView } from "@/lib/views";
 
 export default async function MyBanksPage() {
   const session = await requireServerSession();
-  const accounts = (await listBanksForUser(session.user.id)).map(toAccountView);
+  const accounts = (await listBanksForUser(WEB_TENANT_ID, session.user.id)).map(toAccountView);
   const totalBalance = accounts.reduce((sum, account) => sum + account.balance, 0);
   const institutions = new Set(accounts.map((account) => account.institution)).size;
 
