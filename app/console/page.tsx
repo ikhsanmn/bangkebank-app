@@ -21,8 +21,9 @@ export default async function ConsoleHome() {
       {memberships.length === 0 ? (
         <Card className="border-0 bg-white/80 shadow-sm">
           <CardContent className="p-6 text-sm text-slate-500">
-            You aren&apos;t a member of any tenant yet. A platform admin adds you with
-            scripts/tenant/create.mjs.
+            You aren&apos;t a member of any tenant yet. A platform admin adds you with{" "}
+            <code>npm run tenant:add-member</code>, or makes you the owner of a new tenant with{" "}
+            <code>npm run tenant:create</code>.
           </CardContent>
         </Card>
       ) : (

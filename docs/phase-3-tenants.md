@@ -1,6 +1,6 @@
 # Phase 3 plan: tenants and API keys for fintech clients
 
-Status: **in progress**. Tasks 1–7 done (see [Progress](#progress)). Branch:
+Status: **in progress**. Tasks 1–8 done (see [Progress](#progress)). Branch:
 `phase-3-tenants` (from `phase-2-ledger`).
 
 Phase 2 gave every rupiah a ledger, an audit trail and DB-enforced invariants.
@@ -475,4 +475,41 @@ HTTP check against the production server (20/20, clean server log):
 - the OpenAPI document is public.
 
 **Not in the UI yet:** rolling a key (the library supports it) and inviting
-members (task 8's admin script adds them).
+members (`npm run tenant:add-member` does it; see task 8).
+
+### Task 8: platform admin scripts (done)
+
+```bash
+npm run tenant:create -- --slug acme-pay --name "Acme Pay" --owner you@example.com [--scopes ledger:read,accounts:read]
+npm run tenant:add-member -- --slug acme-pay --email teammate@example.com --role admin   # or viewer, owner
+```
+
+- `scripts/tenant/create.mjs` creates the tenant, makes an existing web-app user
+  (demo tenant) its owner, and prints the first API key once, with the console
+  URL. Default scopes: all seven.
+- `scripts/tenant/add-member.mjs` adds a member or changes their role. It refuses
+  to demote a tenant's only owner, and locks the owner rows so two demotions
+  can't race past the check.
+- `scripts/tenant/lib.mjs` is plain SQL over node-postgres, so it runs without
+  the app build.
+  - Each command is one transaction.
+  - It sets `app.tenant_id` before touching tenant-scoped tables (the user
+    lookup in the demo tenant, then audit rows in the new tenant), so it works
+    for a non-superuser owner under FORCE RLS.
+  - The key format and HMAC match `lib/server/api-keys.ts`.
+  - Writes are audited (`tenant.created`, `tenant_member.added`,
+    `api_key.created`) with `metadata.via = "platform-admin-cli"`.
+- Errors (taken slug, bad slug, unknown owner, unknown scope or role, missing
+  tenant, malformed arguments) print a one-line message and exit 1, leaving
+  nothing behind.
+- `tests/tenant-admin.test.ts` (4) runs the library *as the app role*:
+  - a created tenant's key passes the app's `verifyApiKey`, the owner
+    membership appears in the console, and the audit trail is written;
+  - scopes can be narrowed;
+  - bad input is refused with no rows left;
+  - members can be added and their roles changed, with the last-owner guard.
+- **Found during the CLI smoke run:** `add-member` could demote the only owner.
+  The guard above was added and is tested.
+- **Verified:** the CLIs against the dev database (create, duplicate, unknown
+  owner, add-member, bad argument, with correct exit codes), plus the full
+  suite, lint and typecheck.

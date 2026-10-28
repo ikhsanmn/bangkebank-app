@@ -16,7 +16,9 @@
     "db:start": "bash scripts/db/run-db-command.sh start",
     "db:stop": "bash scripts/db/run-db-command.sh stop",
     "db:migrate": "bash scripts/db/run-db-command.sh migrate",
-    "db:studio": "bash scripts/db/run-db-command.sh studio"
+    "db:studio": "bash scripts/db/run-db-command.sh studio",
+    "tenant:create": "node scripts/tenant/create.mjs",
+    "tenant:add-member": "node scripts/tenant/add-member.mjs"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.6.0",
