@@ -9,3 +9,15 @@ tests
 docs
 *.tsbuildinfo
 Dockerfile
+coverage
+*.log
+.codex
+.claude
+.vercel
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.dump
+**/*.sql.gz
+**/*.bak

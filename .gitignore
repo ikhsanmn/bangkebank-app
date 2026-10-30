@@ -8,3 +8,17 @@ coverage
 !.env.example
 *.tsbuildinfo
 .codex
+.claude
+.vercel
+.DS_Store
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Database dumps can hold PII. Plain *.sql stays tracked: drizzle/ migrations.
+*.dump
+*.sql.gz
+*.bak
