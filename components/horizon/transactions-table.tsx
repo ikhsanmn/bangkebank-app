@@ -2,17 +2,22 @@ import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatCurrency, formatDate, type Transaction } from "@/lib/mock-data";
+import { formatCurrency, formatDate } from "@/lib/format";
+import type { TransactionView } from "@/lib/views";
 
 export function TransactionsTable({
   transactions,
   showAccount = false,
   accountLabelMap
 }: {
-  transactions: Transaction[];
+  transactions: TransactionView[];
   showAccount?: boolean;
   accountLabelMap?: Record<string, string>;
 }) {
+  if (transactions.length === 0) {
+    return <p className="py-8 text-center text-sm text-slate-500">No transactions yet.</p>;
+  }
+
   return (
     <Table>
       <TableHeader>
@@ -72,6 +77,7 @@ export function TransactionsTable({
                 <span
                   className={incoming ? "font-medium text-emerald-700" : "font-medium text-[#091c31]"}
                 >
+                  <span className="sr-only">{incoming ? "Received " : "Sent "}</span>
                   {incoming ? "+" : "-"}
                   {formatCurrency(Math.abs(transaction.amount))}
                 </span>

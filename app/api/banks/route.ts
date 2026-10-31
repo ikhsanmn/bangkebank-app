@@ -1,43 +1,48 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { ensureDatabase } from "@/lib/db/bootstrap";
-import { getRequestSession } from "@/lib/session";
+import { auditContextFrom } from "@/lib/server/audit";
+import { readJson, invalidJson, unauthorized } from "@/lib/server/http";
+import { getRequestSession, WEB_TENANT_ID } from "@/lib/session";
 import { createBankForUser, listBanksForUser } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
 
-const createBankSchema = z.object({
-  institution: z.string().min(2),
-  name: z.string().min(2),
-  subtype: z.string().min(2),
-  mask: z.string().min(4).max(4),
-  currentBalance: z.coerce.number().min(0),
-  availableBalance: z.coerce.number().min(0),
-  routingHint: z.string().min(2).optional()
-});
+// Balances are deliberately absent: new accounts open at zero.
+const createBankSchema = z
+  .object({
+    institution: z.string().min(2).max(80),
+    name: z.string().min(2).max(80),
+    subtype: z.string().min(2).max(40),
+    mask: z.string().regex(/^\d{4}$/),
+    routingHint: z.string().min(2).max(80).optional()
+  })
+  .strict();
 
 export async function GET(request: Request) {
-  await ensureDatabase();
   const session = await getRequestSession(request);
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return unauthorized();
   }
 
-  const banks = await listBanksForUser(session.user.id);
+  const banks = await listBanksForUser(WEB_TENANT_ID, session.user.id);
   return NextResponse.json({ banks });
 }
 
 export async function POST(request: Request) {
-  await ensureDatabase();
   const session = await getRequestSession(request);
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return unauthorized();
   }
 
-  const parsed = createBankSchema.safeParse(await request.json());
+  const body = await readJson(request);
+  if (body === undefined) {
+    return invalidJson();
+  }
+
+  const parsed = createBankSchema.safeParse(body);
 
   if (!parsed.success) {
     return NextResponse.json(
@@ -46,6 +51,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const bank = await createBankForUser(session.user.id, parsed.data);
+  const bank = await createBankForUser(
+    WEB_TENANT_ID,
+    session.user.id,
+    parsed.data,
+    auditContextFrom(request, session.user.id)
+  );
   return NextResponse.json({ bank }, { status: 201 });
 }

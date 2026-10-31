@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Landmark, LayoutDashboard, RefreshCcw, Rows3, SendHorizonal } from "lucide-react";
+import { Landmark, LayoutDashboard, Rows3, SendHorizonal } from "lucide-react";
 import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
@@ -10,9 +10,8 @@ const items = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/my-banks", label: "My Banks", icon: Landmark },
   { href: "/transaction-history", label: "History", icon: Rows3 },
-  { href: "/transfer", label: "Transfer", icon: SendHorizonal },
-  { href: "/connect-bank", label: "Connect", icon: RefreshCcw }
-];
+  { href: "/transfer", label: "Transfer", icon: SendHorizonal }
+] as const;
 
 export function AppSidebar() {
   const pathname = usePathname();
@@ -21,14 +20,13 @@ export function AppSidebar() {
     <aside className="hidden h-screen shrink-0 border-r border-border/60 bg-[#071522] px-5 py-6 text-white lg:sticky lg:top-0 lg:flex lg:w-[284px] lg:flex-col">
       <div className="rounded-[28px] border border-white/10 bg-white/5 p-5">
         <p className="text-xs uppercase tracking-[0.32em] text-white/55">BangkeBank</p>
-        <h2 className="mt-3 font-serif text-3xl">Personal Banking OS</h2>
+        <h2 className="mt-3 font-serif text-3xl">Banking sandbox</h2>
         <p className="mt-3 text-sm leading-6 text-white/65">
-          Review balances, sync transaction history, and move money without
-          leaving one workspace.
+          A portfolio demo of accounts, history, and transfers. Sandbox balances only.
         </p>
       </div>
 
-      <nav className="mt-8 space-y-2">
+      <nav aria-label="Main" className="mt-8 space-y-2">
         {items.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href;
@@ -37,6 +35,7 @@ export function AppSidebar() {
             <Link
               key={item.href}
               href={item.href}
+              aria-current={active ? "page" : undefined}
               className={cn(
                 "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition-colors",
                 active

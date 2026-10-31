@@ -54,7 +54,9 @@ export function SignInForm() {
             <Input
               id="email"
               type="email"
-              placeholder="avery@bangkebank.app"
+              required
+              autoComplete="email"
+              placeholder="you@example.com"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
             />
@@ -68,6 +70,8 @@ export function SignInForm() {
             <Input
               id="password"
               type="password"
+              required
+              autoComplete="current-password"
               placeholder="Enter your password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -75,9 +79,9 @@ export function SignInForm() {
           </div>
 
           {error ? (
-            <div className="rounded-[20px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            <p role="alert" className="rounded-[20px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
               {error}
-            </div>
+            </p>
           ) : null}
 
           <Button className="w-full" size="lg" disabled={isPending} type="submit">

@@ -1,23 +1,20 @@
 import { NextResponse } from "next/server";
 
-import { ensureDatabase } from "@/lib/db/bootstrap";
-import { getRequestSession } from "@/lib/session";
+import { unauthorized } from "@/lib/server/http";
+import { getRequestSession, WEB_TENANT_ID } from "@/lib/session";
 import { getUserProfile } from "@/lib/server/banking";
 
 export const runtime = "nodejs";
 
+// Returns an explicit field list; identity data (NIK, DOB, address) stays server-side
+// apart from the last four NIK digits.
 export async function GET(request: Request) {
-  await ensureDatabase();
   const session = await getRequestSession(request);
 
   if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return unauthorized();
   }
 
-  const profile = await getUserProfile(session.user.id);
-
-  return NextResponse.json({
-    user: session.user,
-    profile
-  });
+  const profile = await getUserProfile(WEB_TENANT_ID, session.user.id);
+  return NextResponse.json({ profile });
 }
